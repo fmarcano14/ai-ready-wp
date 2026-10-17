@@ -17,12 +17,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class Generator {
 
 	/**
-	 * Documents per query. The rebuild stops after MAX_ITEMS.
-	 * 50 per page and fewer than 10,000 pages is the existing cap.
+	 * Documents per query. A rebuild keeps at most MAX_ITEMS documents.
+	 * llms-full.txt also stops at FULL_BYTES.
 	 */
 	public const BATCH_SIZE = 50;
 
-	public const MAX_ITEMS = 499950;
+	public const MAX_ITEMS = 10000;
+
+	public const FULL_BYTES = 10485760;
 
 	/**
 	 * Bytes left free before a request rebuild hands the rest to cron.
@@ -76,16 +78,33 @@ final class Generator {
 		if ( ! self::generation_allowed() ) {
 			return 0;
 		}
+		$store = Store::open();
+		if ( ! $store->acquire_lock() ) {
+			return new \WP_Error(
+				'ai_ready_busy',
+				__( 'AI Ready is already rebuilding.', 'ai-ready-wp' )
+			);
+		}
+		try {
+			return $this->run_locked( $fresh, $store );
+		} finally {
+			$store->release_lock();
+		}
+	}
 
+	/**
+	 * @param bool  $fresh True skips the reuse cache.
+	 * @param Store $store Open store. The caller holds the rebuild lock.
+	 * @return int|\WP_Error
+	 */
+	private function run_locked( bool $fresh, Store $store ) {
 		$settings          = Settings::current();
 		$reader            = new ContentReader();
 		$converter         = new HtmlToMarkdown();
-		$store             = Store::open();
 		$rows              = array();
 		$converter_version = $this->converter_version();
 		$done              = 0;
 		$page_number       = 1;
-		$pages             = 1;
 
 		$previous = get_current_user_id();
 		wp_set_current_user( 0 );
@@ -94,9 +113,12 @@ final class Generator {
 				if ( $this->should_defer( $done ) ) {
 					return $this->fail( $this->hand_off() );
 				}
-				$batch = $this->batch( $settings, $page_number );
-				$pages = $batch['pages'];
-				foreach ( $batch['posts'] as $post ) {
+				$posts = $this->batch( $settings, $page_number );
+				if ( array() === $posts ) {
+					break;
+				}
+				$fetched = count( $posts );
+				foreach ( $posts as $post ) {
 					if ( $done >= self::MAX_ITEMS ) {
 						break 2;
 					}
@@ -118,10 +140,10 @@ final class Generator {
 						$page = LlmsTxt::page( $title, $body );
 						$note = Text::note( (string) $post->post_excerpt, $html, $settings->note_length() );
 						unset( $html, $body );
-					}
-					$staged = $store->stage( $id, $page, $stamp, $note, $converter_version, $done );
-					if ( is_wp_error( $staged ) ) {
-						return $this->fail( $staged );
+						$staged = $store->stage( $id, $page, $stamp, $note, $converter_version, $done );
+						if ( is_wp_error( $staged ) ) {
+							return $this->fail( $staged );
+						}
 					}
 					$rows[] = array(
 						'id'       => $id,
@@ -136,9 +158,12 @@ final class Generator {
 					wp_cache_delete( $id, 'post_meta' );
 					++$done;
 				}
-				unset( $batch );
+				unset( $posts );
+				if ( $fetched < $this->batch_size() ) {
+					break;
+				}
 				++$page_number;
-			} while ( $page_number <= $pages && $done < self::MAX_ITEMS );
+			} while ( $done < self::MAX_ITEMS );
 		} finally {
 			wp_set_current_user( $previous );
 		}
@@ -237,9 +262,9 @@ final class Generator {
 	 * @return \WP_Error
 	 */
 	private function hand_off() {
-		if ( ! wp_next_scheduled( Scheduler::HOOK ) ) {
-			wp_schedule_single_event( time() + 1, Scheduler::HOOK );
-		}
+		$when = time() + 1;
+		wp_clear_scheduled_hook( Scheduler::HOOK );
+		wp_schedule_single_event( $when, Scheduler::HOOK );
 		return new \WP_Error(
 			'ai_ready_deferred',
 			__( 'AI Ready could not finish this rebuild in the current request. Cron will finish it.', 'ai-ready-wp' )
@@ -291,7 +316,7 @@ final class Generator {
 	}
 
 	/**
-	 * @return array{posts: \WP_Post[], pages: int}
+	 * @return \WP_Post[]
 	 */
 	private function batch( Settings $settings, int $page ): array {
 		$query = new \WP_Query(
@@ -307,8 +332,8 @@ final class Generator {
 				),
 				'ignore_sticky_posts'    => true,
 				'suppress_filters'       => true,
-				'no_found_rows'          => false,
-				'update_post_meta_cache' => false,
+				'no_found_rows'          => true,
+				'update_post_meta_cache' => true,
 				'update_post_term_cache' => false,
 			)
 		);
@@ -318,13 +343,9 @@ final class Generator {
 				$posts[] = $post;
 			}
 		}
-		$pages = (int) $query->max_num_pages;
 		wp_reset_postdata();
 		unset( $query );
-		return array(
-			'posts' => $posts,
-			'pages' => $pages,
-		);
+		return $posts;
 	}
 
 	private function title( \WP_Post $post ): string {

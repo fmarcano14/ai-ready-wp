@@ -15,7 +15,7 @@ Single-site only. Publishes llms.txt and Markdown views of public posts and page
 AI Ready WP writes three kinds of files on your server:
 
 * `/llms.txt`, with the site name, a short summary, and links to the public documents.
-* `/llms-full.txt`, with the Markdown of those documents, when you leave that option on.
+* `/llms-full.txt`, with the Markdown of those documents, when you leave that option on. A rebuild keeps at most 10,000 documents, and this file stops at 10 MB.
 * A Markdown view of each included post or page at its permalink plus `.md`, or `?format=markdown` when the permalink already has a query string.
 
 The Markdown response uses `text/markdown; charset=utf-8`, `X-Robots-Tag: noindex`, and a canonical link back to the HTML page. The HTML head links to that Markdown URL.
@@ -42,7 +42,7 @@ No. llms.txt and each Markdown document are stored in the database on this serve
 
 = When do the files refresh? =
 
-A normal edit schedules one rebuild about 30 seconds later. Unpublishing, adding a password, excluding a document, or marking it noindex rewrites the files in that request. A normal page view serves the last generated files and does not rebuild them.
+A normal edit schedules one rebuild about 30 seconds later. Unpublishing, adding a password, excluding a document, marking it noindex, or deleting it removes that document in the same request. A normal page view serves the last generated files and does not rebuild them.
 
 = Who can change the settings? =
 

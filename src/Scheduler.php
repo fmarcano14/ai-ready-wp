@@ -38,7 +38,8 @@ final class Scheduler {
 		add_action( 'save_post', array( $this, 'queue' ), 20, 2 );
 		add_action( 'save_post_wp_block', array( $this, 'queue_pattern' ), 20, 2 );
 		add_action( 'deleted_post', array( $this, 'queue_id' ), 20 );
-		add_action( 'wp_trash_post', array( $this, 'queue_id' ), 20 );
+		add_action( 'before_delete_post', array( $this, 'drop_deleted' ), 10, 2 );
+		add_action( 'wp_trash_post', array( $this, 'drop_trashed' ), 10 );
 		add_action( 'untrash_post', array( $this, 'queue_id' ), 20 );
 		add_action( 'transition_post_status', array( $this, 'drop_hidden' ), 10, 3 );
 		add_action( 'added_post_meta', array( $this, 'drop_meta' ), 10, 4 );
@@ -108,8 +109,8 @@ final class Scheduler {
 	}
 
 	/**
-	 * Ask for one rebuild when a document leaves the public set.
-	 * The stored copy stays until that rebuild confirms the replacement.
+	 * Drop a document that is no longer public, then ask for one rebuild.
+	 * The drop is immediate. The rebuild may be handed to cron.
 	 *
 	 * @param string   $new_status New status.
 	 * @param string   $old_status Old status.
@@ -122,9 +123,39 @@ final class Scheduler {
 		if ( 'publish' === $new_status && '' === (string) $post->post_password ) {
 			return;
 		}
-		if ( 'publish' === $old_status ) {
-			$this->coalesce();
+		if ( 'publish' !== $old_status && 'publish' !== $new_status ) {
+			return;
 		}
+		Store::open()->forget( $post );
+		$this->coalesce();
+	}
+
+	/**
+	 * Trash still has the public permalink. Remove the document before the status flips.
+	 *
+	 * @param int $post_id Post ID.
+	 */
+	public function drop_trashed( $post_id ): void {
+		$post = get_post( (int) $post_id );
+		if ( $post instanceof \WP_Post ) {
+			Store::open()->forget( $post );
+		}
+		$this->coalesce();
+	}
+
+	/**
+	 * The post row still exists here, so its public URL can be taken out of the index.
+	 *
+	 * @param int           $post_id Post ID.
+	 * @param \WP_Post|null $post    Post, when WordPress has it.
+	 */
+	public function drop_deleted( $post_id, $post = null ): void {
+		if ( $post instanceof \WP_Post ) {
+			Store::open()->forget( $post );
+		} else {
+			Store::open()->forget_id( (int) $post_id );
+		}
+		$this->coalesce();
 	}
 
 	/**
@@ -149,6 +180,7 @@ final class Scheduler {
 		if ( null === Store::open()->read_document( (int) $post->ID ) ) {
 			return;
 		}
+		Store::open()->forget( $post );
 		$this->coalesce();
 	}
 

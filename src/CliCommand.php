@@ -77,6 +77,7 @@ final class CliCommand {
 			'documents: ' . (string) count( $store->document_ids() ),
 			'generated_at: ' . ( $when ? gmdate( 'c', $when ) : 'never' ),
 			'max_items: ' . (string) Generator::MAX_ITEMS,
+			'full_bytes: ' . (string) Generator::FULL_BYTES,
 		);
 		if ( is_array( $error ) ) {
 			$lines[] = 'last_error: ' . $error['message'];

@@ -32,6 +32,19 @@ final class Store {
 
 	public const ERROR_OPTION = 'ai_ready_last_error';
 
+	public const PENDING_OPTION = 'ai_ready_full_pending';
+
+	public const LOCK_OPTION = 'ai_ready_rebuild_lock';
+
+	public const LOCK_TTL = 900;
+
+	/**
+	 * Token for the lock held by this process.
+	 *
+	 * @var string
+	 */
+	private static string $lock_token = '';
+
 	public const ERROR_TRANSIENT = 'ai_ready_last_error';
 
 	public const META_MARKDOWN = '_ai_ready_markdown';
@@ -136,6 +149,7 @@ final class Store {
 			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not remove the previous documents.', 'ai-ready-wp' ) );
 		}
 		delete_option( self::FULL_OPTION );
+		delete_option( self::PENDING_OPTION );
 		$this->remove_legacy();
 		delete_transient( self::ERROR_TRANSIENT );
 		return true;
@@ -169,29 +183,50 @@ final class Store {
 		if ( ! is_callable( $write ) ) {
 			return;
 		}
-		$write( rtrim( $preamble ) );
-		$after = -1;
-		$count = 0;
-		$limit = Generator::MAX_ITEMS;
-		while ( $count < $limit ) {
+		$budget = (int) apply_filters( 'ai_ready_full_bytes', Generator::FULL_BYTES );
+		if ( $budget < 1 ) {
+			$budget = Generator::FULL_BYTES;
+		}
+		$head = rtrim( $preamble );
+		if ( strlen( $head ) >= $budget ) {
+			$write( substr( $head, 0, $budget ) );
+			return;
+		}
+		$write( $head );
+		$sent     = strlen( $head );
+		$after    = -1;
+		$count    = 0;
+		$limit    = Generator::MAX_ITEMS;
+		$settings = Settings::current();
+		while ( $count < $limit && $sent < $budget ) {
 			$batch = $this->positions_after( $after, Generator::BATCH_SIZE );
 			if ( array() === $batch ) {
 				break;
 			}
+			$visible = $this->live_public_ids( $batch, $settings );
 			foreach ( $batch as $row ) {
-				if ( $count >= $limit ) {
+				$after = $row['position'];
+				if ( $count >= $limit || $sent >= $budget ) {
 					break 2;
+				}
+				if ( ! isset( $visible[ $row['id'] ] ) ) {
+					continue;
 				}
 				$markdown = $this->markdown_column( (int) $row['id'] );
 				$piece    = "\n\n" . rtrim( $markdown );
 				unset( $markdown );
+				if ( ( $sent + strlen( $piece ) ) > $budget ) {
+					break 2;
+				}
 				$write( $piece );
+				$sent += strlen( $piece );
 				unset( $piece );
-				$after = $row['position'];
 				++$count;
 			}
 		}
-		$write( "\n" );
+		if ( $sent < $budget ) {
+			$write( "\n" );
+		}
 	}
 
 	public function etag(): string {
@@ -199,7 +234,8 @@ final class Store {
 		if ( ! is_string( $stamp ) || '' === $stamp ) {
 			$stamp = hash( 'sha256', (string) $this->generated_at() );
 		}
-		return '"' . $stamp . '"';
+		$preamble = ( new Generator() )->preamble();
+		return '"' . hash( 'sha256', $stamp . "\n" . $preamble ) . '"';
 	}
 
 	/**
@@ -235,6 +271,38 @@ final class Store {
 		return $value;
 	}
 
+	/**
+	 * Remove one document from the live files without waiting for a rebuild.
+	 */
+	public function forget( \WP_Post $post ): void {
+		$this->forget_id( (int) $post->ID );
+		$needles = array();
+		$url     = Urls::markdown( $post );
+		if ( '' !== $url ) {
+			$needles[] = $url;
+		}
+		$slug = (string) $post->post_name;
+		if ( '' !== $slug ) {
+			$needles[] = '/' . $slug . '.md';
+		}
+		if ( Urls::is_front_page( $post ) ) {
+			$needles[] = '/index.md';
+		}
+		$this->remove_index_needles( $needles );
+	}
+
+	/**
+	 * Delete stored Markdown and position for one post. Safe when the row is already gone.
+	 */
+	public function forget_id( int $id ): void {
+		if ( $id < 1 ) {
+			return;
+		}
+		foreach ( $this->meta_keys() as $key ) {
+			delete_post_meta( $id, $key );
+		}
+	}
+
 	public function has_index(): bool {
 		return is_string( get_option( self::INDEX_OPTION, null ) );
 	}
@@ -244,6 +312,49 @@ final class Store {
 			return false;
 		}
 		return Settings::current()->write_full();
+	}
+
+	public function full_pending(): bool {
+		return '1' === (string) get_option( self::PENDING_OPTION, '' );
+	}
+
+	/**
+	 * One rebuild at a time. An expired lock can be taken over.
+	 */
+	public function acquire_lock(): bool {
+		$token = function_exists( 'wp_generate_password' ) ? wp_generate_password( 12, false ) : substr( hash( 'sha256', (string) microtime( true ) ), 0, 12 );
+		$until = time() + self::LOCK_TTL;
+		$value = $token . '|' . (string) $until;
+		if ( add_option( self::LOCK_OPTION, $value, '', 'no' ) ) {
+			self::$lock_token = $token;
+			return true;
+		}
+		$current = get_option( self::LOCK_OPTION, '' );
+		$expires = 0;
+		if ( is_string( $current ) && false !== strpos( $current, '|' ) ) {
+			$expires = (int) substr( $current, (int) strrpos( $current, '|' ) + 1 );
+		}
+		if ( $expires >= time() ) {
+			return false;
+		}
+		update_option( self::LOCK_OPTION, $value, false );
+		$check = get_option( self::LOCK_OPTION, '' );
+		if ( $check !== $value ) {
+			return false;
+		}
+		self::$lock_token = $token;
+		return true;
+	}
+
+	public function release_lock(): void {
+		if ( '' === self::$lock_token ) {
+			return;
+		}
+		$current = get_option( self::LOCK_OPTION, '' );
+		if ( is_string( $current ) && 0 === strpos( $current, self::$lock_token . '|' ) ) {
+			delete_option( self::LOCK_OPTION );
+		}
+		self::$lock_token = '';
 	}
 
 	/**
@@ -335,6 +446,9 @@ final class Store {
 		delete_option( self::SCHEMA_OPTION );
 		delete_option( self::EPOCH_OPTION );
 		delete_option( self::ERROR_OPTION );
+		delete_option( self::PENDING_OPTION );
+		delete_option( self::LOCK_OPTION );
+		self::$lock_token = '';
 		delete_transient( self::ERROR_TRANSIENT );
 		foreach ( $this->meta_keys() as $key ) {
 			delete_metadata( 'post', 0, $key, '', true );
@@ -430,31 +544,168 @@ final class Store {
 	private function swap( array $ids ): bool {
 		$position = 0;
 		foreach ( $ids as $id ) {
-			$markdown  = get_post_meta( $id, self::META_NEXT_MARKDOWN, true );
-			$stamp     = get_post_meta( $id, self::META_NEXT_STAMP, true );
-			$note      = get_post_meta( $id, self::META_NEXT_NOTE, true );
-			$converter = get_post_meta( $id, self::META_NEXT_CONVERTER, true );
-			if ( ! is_string( $markdown ) || ! metadata_exists( 'post', $id, self::META_NEXT_MARKDOWN ) ) {
+			if ( ! $this->publish_id( $id, $position ) ) {
 				return false;
-			}
-			if ( ! is_string( $stamp ) || ! is_string( $note ) || ! is_string( $converter ) ) {
-				return false;
-			}
-			$written = $this->write_meta( $id, self::META_MARKDOWN, $markdown )
-				&& $this->write_meta( $id, self::META_STAMP, $stamp )
-				&& $this->write_meta( $id, self::META_NOTE, $note )
-				&& $this->write_meta( $id, self::META_CONVERTER, $converter )
-				&& $this->write_meta( $id, self::META_POSITION, (string) $position );
-			unset( $markdown );
-			if ( ! $written ) {
-				return false;
-			}
-			foreach ( array( self::META_NEXT_MARKDOWN, self::META_NEXT_STAMP, self::META_NEXT_NOTE, self::META_NEXT_CONVERTER, self::META_NEXT_POSITION ) as $key ) {
-				delete_post_meta( $id, $key );
 			}
 			++$position;
 		}
 		return true;
+	}
+
+	/**
+	 * Staged rows replace the live copy. An unchanged document only updates its position.
+	 */
+	private function publish_id( int $id, int $position ): bool {
+		if ( ! metadata_exists( 'post', $id, self::META_NEXT_MARKDOWN ) ) {
+			if ( ! metadata_exists( 'post', $id, self::META_MARKDOWN ) ) {
+				return false;
+			}
+			$current = get_post_meta( $id, self::META_POSITION, true );
+			if ( metadata_exists( 'post', $id, self::META_POSITION ) && (string) $position === (string) $current ) {
+				return true;
+			}
+			return $this->write_meta( $id, self::META_POSITION, (string) $position );
+		}
+		$markdown  = get_post_meta( $id, self::META_NEXT_MARKDOWN, true );
+		$stamp     = get_post_meta( $id, self::META_NEXT_STAMP, true );
+		$note      = get_post_meta( $id, self::META_NEXT_NOTE, true );
+		$converter = get_post_meta( $id, self::META_NEXT_CONVERTER, true );
+		if ( ! is_string( $markdown ) || ! is_string( $stamp ) || ! is_string( $note ) || ! is_string( $converter ) ) {
+			return false;
+		}
+		$written = $this->write_meta( $id, self::META_MARKDOWN, $markdown )
+			&& $this->write_meta( $id, self::META_STAMP, $stamp )
+			&& $this->write_meta( $id, self::META_NOTE, $note )
+			&& $this->write_meta( $id, self::META_CONVERTER, $converter )
+			&& $this->write_meta( $id, self::META_POSITION, (string) $position );
+		unset( $markdown );
+		if ( ! $written ) {
+			return false;
+		}
+		foreach ( array( self::META_NEXT_MARKDOWN, self::META_NEXT_STAMP, self::META_NEXT_NOTE, self::META_NEXT_CONVERTER, self::META_NEXT_POSITION ) as $key ) {
+			delete_post_meta( $id, $key );
+		}
+		return true;
+	}
+
+	/**
+	 * Ids in this batch that are still published, unprotected, and included.
+	 * Status and the small exclusion keys are read here. The Markdown body is not.
+	 *
+	 * @param array<int, array{id: int, position: int}> $batch    Position rows.
+	 * @param Settings                                  $settings Current settings.
+	 * @return array<int, true>
+	 */
+	private function live_public_ids( array $batch, Settings $settings ): array {
+		global $wpdb;
+		$ids = array();
+		foreach ( $batch as $row ) {
+			$id = (int) $row['id'];
+			if ( $id > 0 ) {
+				$ids[] = $id;
+			}
+		}
+		if ( array() === $ids || ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
+			return array();
+		}
+		$placeholders      = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+		$sql               = "SELECT ID, post_status, post_password, post_type FROM {$wpdb->posts} WHERE ID IN ($placeholders)"; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- placeholders are %d tokens, finished by prepare below.
+		$prepared          = call_user_func_array( array( $wpdb, 'prepare' ), array_merge( array( $sql ), $ids ) );
+		$posts             = $wpdb->get_results( $prepared ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared
+		$wpdb->last_result = array();
+		if ( ! is_array( $posts ) ) {
+			return array();
+		}
+		$flags = $this->exclusion_flags( $ids );
+		$allow = array();
+		$types = $settings->post_types();
+		foreach ( $posts as $post ) {
+			if ( ! is_object( $post ) || ! isset( $post->ID ) ) {
+				continue;
+			}
+			$id = (int) $post->ID;
+			if ( 'publish' !== (string) $post->post_status || '' !== (string) $post->post_password ) {
+				continue;
+			}
+			$type   = (string) $post->post_type;
+			$object = get_post_type_object( $type );
+			if ( ! $object instanceof \WP_Post_Type || empty( $object->public ) || ! in_array( $type, $types, true ) ) {
+				continue;
+			}
+			$meta = isset( $flags[ $id ] ) ? $flags[ $id ] : array();
+			if ( isset( $meta[ ExcludeMeta::META_KEY ] ) && '1' === (string) $meta[ ExcludeMeta::META_KEY ] ) {
+				continue;
+			}
+			if ( Noindex::detect( $meta ) ) {
+				continue;
+			}
+			$allow[ $id ] = true;
+		}
+		unset( $posts, $flags );
+		return $allow;
+	}
+
+	/**
+	 * Exclusion and noindex values for a batch, without loading Markdown meta.
+	 *
+	 * @param int[] $ids Post ids.
+	 * @return array<int, array<string, string>>
+	 */
+	private function exclusion_flags( array $ids ): array {
+		global $wpdb;
+		$keys              = array_merge( array( ExcludeMeta::META_KEY ), Noindex::keys() );
+		$id_tokens         = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+		$key_tokens        = implode( ',', array_fill( 0, count( $keys ), '%s' ) );
+		$sql               = "SELECT post_id, meta_key, meta_value FROM {$wpdb->postmeta} WHERE post_id IN ($id_tokens) AND meta_key IN ($key_tokens)"; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- placeholders are finished by prepare below.
+		$prepared          = call_user_func_array( array( $wpdb, 'prepare' ), array_merge( array( $sql ), $ids, $keys ) );
+		$rows              = $wpdb->get_results( $prepared ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared
+		$wpdb->last_result = array();
+		$grouped           = array();
+		if ( ! is_array( $rows ) ) {
+			return $grouped;
+		}
+		foreach ( $rows as $row ) {
+			if ( ! is_object( $row ) || ! isset( $row->post_id, $row->meta_key ) ) {
+				continue;
+			}
+			$grouped[ (int) $row->post_id ][ (string) $row->meta_key ] = isset( $row->meta_value ) ? (string) $row->meta_value : '';
+		}
+		unset( $rows );
+		return $grouped;
+	}
+
+	/**
+	 * @param string[] $needles URLs or path suffixes that identify one document.
+	 */
+	private function remove_index_needles( array $needles ): void {
+		$index = $this->read_index();
+		if ( ! is_string( $index ) || array() === $needles ) {
+			return;
+		}
+		$kept    = array();
+		$changed = false;
+		foreach ( explode( "\n", $index ) as $line ) {
+			$drop = false;
+			foreach ( $needles as $needle ) {
+				if ( '' !== $needle && false !== strpos( $line, $needle ) ) {
+					$drop = true;
+					break;
+				}
+			}
+			if ( $drop ) {
+				$changed = true;
+				continue;
+			}
+			$kept[] = $line;
+		}
+		if ( ! $changed ) {
+			return;
+		}
+		$updated = rtrim( implode( "\n", $kept ) ) . "\n";
+		if ( ! $this->write_option( self::INDEX_OPTION, $updated ) ) {
+			return;
+		}
+		$this->write_option( self::STAMP_OPTION, hash( 'sha256', $updated . '|' . (string) time() ) );
 	}
 
 	/**

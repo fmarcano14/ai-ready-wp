@@ -91,6 +91,18 @@ final class Response {
 		);
 	}
 
+	public static function unavailable( int $retry_after ): self {
+		return new self(
+			503,
+			array(
+				'Content-Type'  => 'text/plain; charset=utf-8',
+				'Retry-After'   => (string) max( 1, $retry_after ),
+				'Cache-Control' => 'no-store',
+			),
+			"Not ready\n"
+		);
+	}
+
 	public static function not_found(): self {
 		return new self(
 			404,

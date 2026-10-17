@@ -137,6 +137,7 @@ class BehaviorTest extends WP_UnitTestCase {
 		remove_all_filters( 'ai_ready_force_defer' );
 		remove_all_filters( 'ai_ready_batch_size' );
 		remove_all_filters( 'ai_ready_treat_as_background' );
+		remove_all_filters( 'ai_ready_full_bytes' );
 		Store::open()->destroy();
 		wp_clear_scheduled_hook( Scheduler::HOOK );
 		parent::tear_down();
@@ -352,8 +353,7 @@ class BehaviorTest extends WP_UnitTestCase {
 	public function test_a_failed_write_keeps_the_previous_output_and_is_reported(): void {
 		$extra = $this->publish( 'post', 'Extra page', 'extra-page', '<p>Extra body.</p>' );
 		$this->generate();
-		$before = $this->index();
-		$this->assertStringContainsString( 'extra-page.md', $before );
+		$this->assertStringContainsString( 'extra-page.md', $this->index() );
 		$this->assertNotNull( Store::open()->read_document( $extra ) );
 
 		wp_set_current_user( $this->admin );
@@ -382,8 +382,9 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertInstanceOf( WP_Error::class, $result );
 		$this->assertSame( 'ai_ready_store_failed', $result->get_error_code() );
 		$this->assertSame( 0, $stored );
-		$this->assertSame( $before, $this->index() );
-		$this->assertNotNull( Store::open()->read_document( $extra ) );
+		$this->assertStringNotContainsString( 'extra-page.md', $this->index() );
+		$this->assertStringContainsString( 'cafe-nino.md', $this->index() );
+		$this->assertNull( Store::open()->read_document( $extra ) );
 
 		$_REQUEST['_wpnonce'] = wp_create_nonce( 'ai_ready_generate' );
 		$_POST['_wpnonce']    = $_REQUEST['_wpnonce'];
@@ -394,7 +395,7 @@ class BehaviorTest extends WP_UnitTestCase {
 			$redirected = 'redirect' === $exception->getMessage();
 		}
 		$this->assertTrue( $redirected );
-		$this->assertSame( $before, $this->index() );
+		$this->assertStringNotContainsString( 'extra-page.md', $this->index() );
 
 		$_GET['ai_ready_error'] = '1';
 		ob_start();
@@ -410,7 +411,7 @@ class BehaviorTest extends WP_UnitTestCase {
 		} catch ( RuntimeException $exception ) {
 			$this->assertStringContainsString( 'could not save llms.txt', $exception->getMessage() );
 		}
-		$this->assertSame( $before, $this->index() );
+		$this->assertStringNotContainsString( 'extra-page.md', $this->index() );
 	}
 
 	public function test_unknown_markdown_urls_fall_through(): void {
@@ -515,6 +516,37 @@ class BehaviorTest extends WP_UnitTestCase {
 		$index = $this->index();
 		$this->assertStringNotContainsString( 'bulk-0.md', $index );
 		$this->assertStringContainsString( 'bulk-8.md', $index );
+	}
+
+	public function test_a_cached_rebuild_keeps_unchanged_markdown_rows(): void {
+		global $wpdb;
+		$before = (string) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT meta_id FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s",
+				$this->public_id,
+				Store::META_MARKDOWN
+			)
+		);
+		$this->assertNotSame( '', $before );
+		$renders = 0;
+		add_filter(
+			'the_content',
+			static function ( $content ) use ( &$renders ) {
+				++$renders;
+				return $content;
+			}
+		);
+		$this->assertGreaterThan( 0, $this->generate() );
+		$after = (string) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT meta_id FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s",
+				$this->public_id,
+				Store::META_MARKDOWN
+			)
+		);
+		$this->assertSame( $before, $after );
+		$this->assertSame( 0, $renders );
+		$this->assertStringContainsString( 'cafe-nino.md', $this->index() );
 	}
 
 	public function test_manual_generate_bypasses_the_render_cache(): void {
@@ -675,6 +707,66 @@ class BehaviorTest extends WP_UnitTestCase {
 		unset( $_SERVER['HTTP_IF_NONE_MATCH'] );
 	}
 
+	public function test_the_full_file_stops_at_the_byte_budget(): void {
+		$this->publish( 'post', 'Budget two', 'budget-two', '<p>BUDGET-TWO ' . str_repeat( 'beta ', 800 ) . '</p>' );
+		$this->publish( 'post', 'Budget one', 'budget-one', '<p>BUDGET-ONE</p>' );
+		$this->generate();
+		add_filter(
+			'ai_ready_full_bytes',
+			static function () {
+				return 2000;
+			}
+		);
+		$bytes = 0;
+		$saw1  = false;
+		$saw2  = false;
+		Store::open()->stream_full(
+			( new Generator() )->preamble(),
+			static function ( $chunk ) use ( &$bytes, &$saw1, &$saw2 ) {
+				$bytes += strlen( (string) $chunk );
+				if ( false !== strpos( (string) $chunk, 'BUDGET-ONE' ) ) {
+					$saw1 = true;
+				}
+				if ( false !== strpos( (string) $chunk, 'BUDGET-TWO' ) ) {
+					$saw2 = true;
+				}
+			}
+		);
+		$this->assertLessThanOrEqual( 2000, $bytes );
+		$this->assertTrue( $saw1 );
+		$this->assertFalse( $saw2 );
+		remove_all_filters( 'ai_ready_full_bytes' );
+	}
+
+	public function test_a_title_change_changes_the_etag(): void {
+		$_SERVER['REQUEST_URI'] = '/llms-full.txt';
+		$full                   = ( new Front() )->serve_path();
+		$this->assertInstanceOf( Response::class, $full );
+		$etag = $full->header( 'ETag' );
+		$this->assertNotSame( '', $etag );
+
+		$_SERVER['REQUEST_URI'] = '/llms.txt';
+		$index                  = ( new Front() )->serve_path();
+		$this->assertInstanceOf( Response::class, $index );
+		$this->assertSame( $etag, $index->header( 'ETag' ) );
+
+		update_option( 'blogname', 'Renamed Kitchen' );
+		$_SERVER['HTTP_IF_NONE_MATCH'] = $etag;
+		$_SERVER['REQUEST_URI']        = '/llms-full.txt';
+		$again                         = ( new Front() )->serve_path();
+		$this->assertInstanceOf( Response::class, $again );
+		$this->assertSame( 200, $again->status() );
+		$this->assertStringContainsString( 'Renamed Kitchen', $again->body() );
+		$this->assertNotSame( $etag, $again->header( 'ETag' ) );
+
+		$_SERVER['REQUEST_URI'] = '/llms.txt';
+		$index_again            = ( new Front() )->serve_path();
+		$this->assertInstanceOf( Response::class, $index_again );
+		$this->assertSame( 200, $index_again->status() );
+		$this->assertNotSame( $etag, $index_again->header( 'ETag' ) );
+		unset( $_SERVER['HTTP_IF_NONE_MATCH'] );
+	}
+
 	public function test_a_request_rebuild_hands_the_rest_to_cron(): void {
 		add_filter(
 			'ai_ready_batch_size',
@@ -713,13 +805,87 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'Cron will finish', $html );
 		$status = implode( "\n", ( new CliCommand() )->status_lines() );
 		$this->assertStringContainsString( 'Cron will finish', $status );
-		$this->assertStringContainsString( 'max_items: 499950', $status );
+		$this->assertStringContainsString( 'max_items: 10000', $status );
+		$this->assertStringContainsString( 'full_bytes: 10485760', $status );
 
 		remove_all_filters( 'ai_ready_force_defer' );
 		remove_all_filters( 'ai_ready_batch_size' );
 		do_action( Scheduler::HOOK );
 		$this->assertNull( Store::open()->last_error() );
 		$this->assertStringContainsString( 'cafe-nino.md', $this->index() );
+	}
+
+	public function test_a_forced_handoff_drops_a_hidden_post_immediately(): void {
+		$secret = $this->publish( 'post', 'Defer secret', 'defer-secret', '<p>DEFER-SECRET</p>' );
+		$other  = $this->publish( 'post', 'Defer other', 'defer-other', '<p>DEFER-OTHER</p>' );
+		$this->generate();
+		$this->assertStringContainsString( 'DEFER-SECRET', (string) $this->full() );
+		$this->assertStringContainsString( 'defer-secret.md', $this->index() );
+
+		wp_schedule_single_event( time() + 30, Scheduler::HOOK );
+		$queued = (int) wp_next_scheduled( Scheduler::HOOK );
+		add_filter(
+			'ai_ready_force_defer',
+			static function ( $defer, $done ) {
+				unset( $defer, $done );
+				return true;
+			},
+			10,
+			2
+		);
+		wp_set_current_user( $this->admin );
+		wp_update_post(
+			array(
+				'ID'          => $secret,
+				'post_status' => 'private',
+			)
+		);
+		update_post_meta( $other, ExcludeMeta::META_KEY, '1' );
+		( new Scheduler() )->flush_pending();
+
+		$this->assertStringNotContainsString( 'defer-secret.md', $this->index() );
+		$this->assertStringNotContainsString( 'DEFER-SECRET', (string) $this->full() );
+		$this->assertStringNotContainsString( 'defer-other.md', $this->index() );
+		$this->assertStringNotContainsString( 'DEFER-OTHER', (string) $this->full() );
+		$this->assertNull( Store::open()->read_document( $secret ) );
+		$this->assertNull( $this->raw_markdown( '/defer-secret.md' ) );
+		$scheduled = (int) wp_next_scheduled( Scheduler::HOOK );
+		$this->assertGreaterThan( 0, $scheduled );
+		$this->assertLessThanOrEqual( time() + 5, $scheduled );
+		$this->assertLessThan( $queued, $scheduled );
+		remove_all_filters( 'ai_ready_force_defer' );
+	}
+
+	public function test_a_low_memory_handoff_drops_a_hidden_post_immediately(): void {
+		$secret = $this->publish( 'post', 'Memory secret', 'memory-secret', '<p>MEMORY-SECRET</p>' );
+		$this->generate();
+		$this->assertStringContainsString( 'MEMORY-SECRET', (string) $this->full() );
+
+		wp_set_current_user( $this->admin );
+		wp_update_post(
+			array(
+				'ID'            => $secret,
+				'post_password' => 'now-secret',
+			)
+		);
+		$previous = ini_set( 'memory_limit', (string) ( memory_get_usage( true ) + 8 * 1024 * 1024 ) );
+		try {
+			( new Scheduler() )->flush_pending();
+		} finally {
+			if ( is_string( $previous ) && '' !== $previous ) {
+				ini_set( 'memory_limit', $previous );
+			}
+		}
+
+		$error = Store::open()->last_error();
+		$this->assertIsArray( $error );
+		$this->assertStringContainsString( 'Cron will finish', $error['message'] );
+		$this->assertStringNotContainsString( 'memory-secret.md', $this->index() );
+		$this->assertStringNotContainsString( 'MEMORY-SECRET', (string) $this->full() );
+		$this->assertNull( Store::open()->read_document( $secret ) );
+		$scheduled = (int) wp_next_scheduled( Scheduler::HOOK );
+		$this->assertGreaterThan( 0, $scheduled );
+		$this->assertLessThanOrEqual( time() + 5, $scheduled );
 	}
 
 	public function test_cron_rebuild_failures_stay_visible_until_the_next_success(): void {
@@ -752,6 +918,22 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'last_error: none', $clean );
 	}
 
+	public function test_an_overlapping_rebuild_does_not_record_a_save_error(): void {
+		$store = Store::open();
+		$this->assertTrue( $store->acquire_lock() );
+		$result = Generator::trusted(
+			static function () {
+				return ( new Generator() )->run();
+			}
+		);
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 'ai_ready_busy', $result->get_error_code() );
+		$this->assertNull( Store::open()->last_error() );
+		$this->assertStringContainsString( 'cafe-nino.md', $this->index() );
+		$store->release_lock();
+		$this->assertGreaterThan( 0, $this->generate() );
+	}
+
 	public function test_a_schema_change_schedules_a_rebuild(): void {
 		wp_clear_scheduled_hook( Scheduler::HOOK );
 		update_option( Store::SCHEMA_OPTION, '1', false );
@@ -763,6 +945,19 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertNotFalse( $scheduled );
 		ai_ready_maybe_upgrade();
 		$this->assertSame( $scheduled, wp_next_scheduled( Scheduler::HOOK ) );
+
+		$_SERVER['REQUEST_URI'] = '/llms-full.txt';
+		$waiting                = ( new Front() )->serve_path();
+		$this->assertInstanceOf( Response::class, $waiting );
+		$this->assertSame( 503, $waiting->status() );
+		$this->assertSame( (string) Scheduler::DELAY, $waiting->header( 'Retry-After' ) );
+		$this->assertStringNotContainsString( 'cafe-nino', $waiting->body() );
+
+		$this->generate();
+		$ready = ( new Front() )->serve_path();
+		$this->assertInstanceOf( Response::class, $ready );
+		$this->assertSame( 200, $ready->status() );
+		$this->assertStringContainsString( 'user-0', $ready->body() );
 	}
 
 	public function test_a_leftover_folder_that_cannot_be_removed_is_only_a_warning(): void {
@@ -798,11 +993,11 @@ class BehaviorTest extends WP_UnitTestCase {
 	}
 
 	public function test_uninstall_removes_plugin_data(): void {
+		$this->assertTrue( Store::open()->has_index() );
+		$this->assertNotSame( '', (string) get_post_meta( $this->public_id, Store::META_MARKDOWN, true ) );
 		update_post_meta( $this->public_id, ExcludeMeta::META_KEY, '1' );
 		set_transient( 'ai_ready_rebuild', '1', MINUTE_IN_SECONDS );
 		set_transient( Store::ERROR_TRANSIENT, 'failed', MINUTE_IN_SECONDS );
-		$this->assertTrue( Store::open()->has_index() );
-		$this->assertNotSame( '', (string) get_post_meta( $this->public_id, Store::META_MARKDOWN, true ) );
 
 		if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 			define( 'WP_UNINSTALL_PLUGIN', true );
@@ -816,6 +1011,8 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertFalse( get_option( Store::STAMP_OPTION ) );
 		$this->assertFalse( get_option( Store::SCHEMA_OPTION ) );
 		$this->assertFalse( get_option( Store::ERROR_OPTION ) );
+		$this->assertFalse( get_option( Store::PENDING_OPTION ) );
+		$this->assertFalse( get_option( Store::LOCK_OPTION ) );
 		$this->assertFalse( get_option( Store::EPOCH_OPTION ) );
 		$this->assertSame( '', (string) get_post_meta( $this->public_id, ExcludeMeta::META_KEY, true ) );
 		$this->assertSame( '', (string) get_post_meta( $this->public_id, Store::META_MARKDOWN, true ) );

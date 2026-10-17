@@ -124,9 +124,10 @@ final class AdminPage {
 								<?php
 								echo esc_html(
 									sprintf(
-										/* translators: %s: maximum number of documents */
-										__( 'Assembled on request from each document, up to %s items. It is not stored as one database row.', 'ai-ready-wp' ),
-										number_format_i18n( Generator::MAX_ITEMS )
+										/* translators: 1: maximum number of documents, 2: maximum size of llms-full.txt */
+										__( 'Assembled on request from each document, up to %1$s items or %2$s. It is not stored as one database row.', 'ai-ready-wp' ),
+										number_format_i18n( Generator::MAX_ITEMS ),
+										size_format( Generator::FULL_BYTES )
 									)
 								);
 								?>

@@ -120,6 +120,7 @@ function ai_ready_maybe_upgrade() {
 	}
 	update_option( \AiReady\Store::SCHEMA_OPTION, $schema, false );
 	delete_option( \AiReady\Store::FULL_OPTION );
+	update_option( \AiReady\Store::PENDING_OPTION, '1', false );
 	if ( ! wp_next_scheduled( \AiReady\Scheduler::HOOK ) ) {
 		wp_schedule_single_event( time() + \AiReady\Scheduler::DELAY, \AiReady\Scheduler::HOOK );
 	}

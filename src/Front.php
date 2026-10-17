@@ -171,11 +171,17 @@ final class Front {
 
 	private function stored( string $name ): Response {
 		unset( $name );
-		$body = Store::open()->read_index();
+		$store = Store::open();
+		$body  = $store->read_index();
 		if ( null === $body ) {
 			return Response::not_found();
 		}
-		return Response::plain( $body );
+		$etag    = $store->etag();
+		$headers = $this->validators( $store, $etag );
+		if ( $this->client_has_current( $etag, $store->generated_at() ) ) {
+			return new Response( 304, $headers, '' );
+		}
+		return new Response( 200, $headers, $body );
 	}
 
 	private function full_file(): Response {
@@ -183,17 +189,12 @@ final class Front {
 		if ( ! $store->has_full() ) {
 			return Response::not_found();
 		}
-		$modified = $store->generated_at();
-		$etag     = $store->etag();
-		$headers  = array(
-			'Content-Type'  => 'text/plain; charset=utf-8',
-			'Cache-Control' => 'no-cache',
-			'ETag'          => $etag,
-		);
-		if ( $modified > 0 ) {
-			$headers['Last-Modified'] = gmdate( 'D, d M Y H:i:s', $modified ) . ' GMT';
+		if ( $store->full_pending() ) {
+			return Response::unavailable( Scheduler::DELAY );
 		}
-		if ( $this->client_has_current( $etag, $modified ) ) {
+		$etag    = $store->etag();
+		$headers = $this->validators( $store, $etag );
+		if ( $this->client_has_current( $etag, $store->generated_at() ) ) {
 			return new Response( 304, $headers, '' );
 		}
 		$preamble = ( new Generator() )->preamble();
@@ -205,6 +206,22 @@ final class Front {
 				$store->stream_full( $preamble, $write );
 			}
 		);
+	}
+
+	/**
+	 * @return array<string, string>
+	 */
+	private function validators( Store $store, string $etag ): array {
+		$headers  = array(
+			'Content-Type'  => 'text/plain; charset=utf-8',
+			'Cache-Control' => 'no-cache',
+			'ETag'          => $etag,
+		);
+		$modified = $store->generated_at();
+		if ( $modified > 0 ) {
+			$headers['Last-Modified'] = gmdate( 'D, d M Y H:i:s', $modified ) . ' GMT';
+		}
+		return $headers;
 	}
 
 	private function client_has_current( string $etag, int $modified ): bool {

@@ -16,19 +16,22 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 final class Noindex {
 
-	public static function watches_key( string $key ): bool {
-		return in_array(
-			$key,
-			array(
-				'_yoast_wpseo_meta-robots-noindex',
-				'rank_math_robots',
-				'_seopress_robots_index',
-				'_aioseop_noindex',
-				'_aioseo_noindex',
-				'_genesis_noindex',
-			),
-			true
+	/**
+	 * @return string[]
+	 */
+	public static function keys(): array {
+		return array(
+			'_yoast_wpseo_meta-robots-noindex',
+			'rank_math_robots',
+			'_seopress_robots_index',
+			'_aioseop_noindex',
+			'_aioseo_noindex',
+			'_genesis_noindex',
 		);
+	}
+
+	public static function watches_key( string $key ): bool {
+		return in_array( $key, self::keys(), true );
 	}
 
 	/**
