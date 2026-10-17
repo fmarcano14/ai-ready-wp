@@ -48,6 +48,13 @@ function ai_ready_boot() {
 	}
 	( new AiReady\Front() )->register();
 	( new AiReady\Scheduler() )->register();
+	if ( is_admin() ) {
+		( new AiReady\AdminPage() )->register();
+		( new AiReady\ExcludeMeta() )->register();
+	}
+	if ( defined( 'WP_CLI' ) && WP_CLI ) {
+		\WP_CLI::add_command( 'ai-ready', \AiReady\CliCommand::class );
+	}
 }
 
 /**

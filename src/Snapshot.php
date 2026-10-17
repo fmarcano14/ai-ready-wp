@@ -20,7 +20,7 @@ final class Snapshot {
 		$object   = get_post_type_object( $post->post_type );
 		$public   = $object instanceof \WP_Post_Type && ! empty( $object->public );
 		$password = (string) $post->post_password;
-		$excluded = (string) get_post_meta( $post->ID, '_ai_ready_exclude', true );
+		$excluded = (string) get_post_meta( $post->ID, ExcludeMeta::META_KEY, true );
 		$meta     = array(
 			'_yoast_wpseo_meta-robots-noindex' => get_post_meta( $post->ID, '_yoast_wpseo_meta-robots-noindex', true ),
 			'rank_math_robots'                 => get_post_meta( $post->ID, 'rank_math_robots', true ),
