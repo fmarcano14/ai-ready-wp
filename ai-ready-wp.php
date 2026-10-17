@@ -47,6 +47,7 @@ function ai_ready_boot() {
 		return;
 	}
 	( new AiReady\Front() )->register();
+	( new AiReady\Scheduler() )->register();
 }
 
 /**
