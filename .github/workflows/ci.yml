@@ -35,3 +35,37 @@ jobs:
           tools: composer
       - run: composer install --no-interaction --prefer-dist
       - run: composer test
+
+  integration:
+    name: WordPress
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          coverage: none
+          extensions: mbstring, xml, mysql, mysqli
+          tools: composer
+      - run: composer install --no-interaction --prefer-dist
+      - name: Install WordPress tests
+        run: bash bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 latest
+        env:
+          WP_INSTALL_TESTS_SKIP_UPDATE_CHECK: "true"
+      - name: Integration tests
+        run: composer test:wp
+        env:
+          WP_TESTS_DIR: /tmp/wordpress-tests-lib
+          RUN_WP_TESTS: "1"

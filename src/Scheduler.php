@@ -12,7 +12,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * Save hooks schedule one rebuild. They do not write the public files themselves.
+ * Ordinary edits share one delayed rebuild. Leaving the public set rewrites immediately.
  */
 final class Scheduler {
 
@@ -20,12 +20,21 @@ final class Scheduler {
 
 	public const DELAY = 30;
 
+	/**
+	 * Stops a rewrite from starting another rewrite.
+	 *
+	 * @var bool
+	 */
+	private static bool $rewriting = false;
+
 	public function register(): void {
 		add_action( 'save_post', array( $this, 'queue' ), 20, 2 );
 		add_action( 'deleted_post', array( $this, 'queue_id' ), 20 );
 		add_action( 'wp_trash_post', array( $this, 'queue_id' ), 20 );
 		add_action( 'untrash_post', array( $this, 'queue_id' ), 20 );
 		add_action( 'transition_post_status', array( $this, 'drop_hidden' ), 10, 3 );
+		add_action( 'added_post_meta', array( $this, 'drop_meta' ), 10, 4 );
+		add_action( 'updated_post_meta', array( $this, 'drop_meta' ), 10, 4 );
 		add_action( self::HOOK, array( $this, 'rebuild' ) );
 	}
 
@@ -58,20 +67,24 @@ final class Scheduler {
 	 * @param int $post_id Post ID.
 	 */
 	public function queue_id( $post_id ): void {
-		$post = get_post( (int) $post_id );
-		$this->queue( $post_id, $post instanceof \WP_Post ? $post : null );
+		$post_id = (int) $post_id;
+		$post    = get_post( $post_id );
+		if ( ! $post instanceof \WP_Post ) {
+			Store::from_uploads()->delete_document( $post_id );
+			$this->rewrite_now();
+			return;
+		}
+		$this->queue( $post_id, $post );
 	}
 
 	/**
-	 * Remove a document file as soon as it leaves the public set.
-	 * The index is refreshed by the debounced rebuild, not here.
+	 * Pull a document out of the public files when it is no longer published.
 	 *
 	 * @param string   $new_status New status.
 	 * @param string   $old_status Old status.
 	 * @param \WP_Post $post       Post.
 	 */
 	public function drop_hidden( $new_status, $old_status, $post ): void {
-		unset( $old_status );
 		if ( ! $post instanceof \WP_Post ) {
 			return;
 		}
@@ -79,6 +92,37 @@ final class Scheduler {
 			return;
 		}
 		Store::from_uploads()->delete_document( (int) $post->ID );
+		// The title and note would stay public until cron. Drop them in this request.
+		if ( 'publish' === $old_status ) {
+			$this->rewrite_now();
+		}
+	}
+
+	/**
+	 * @param int    $meta_id Unused meta row ID.
+	 * @param int    $post_id Post ID.
+	 * @param string $key     Meta key.
+	 * @param mixed  $value   Unused new value.
+	 */
+	public function drop_meta( $meta_id, $post_id, $key, $value ): void {
+		unset( $meta_id, $value );
+		$key = is_string( $key ) ? $key : '';
+		if ( ExcludeMeta::META_KEY !== $key && ! Noindex::watches_key( $key ) ) {
+			return;
+		}
+		$post = get_post( (int) $post_id );
+		if ( ! $post instanceof \WP_Post ) {
+			return;
+		}
+		if ( Inclusion::allowed( Snapshot::from_post( $post ), Settings::current()->post_types() ) ) {
+			return;
+		}
+		$store = Store::from_uploads();
+		if ( null === $store->read_document( (int) $post->ID ) ) {
+			return;
+		}
+		$store->delete_document( (int) $post->ID );
+		$this->rewrite_now();
 	}
 
 	public function rebuild(): void {
@@ -95,6 +139,24 @@ final class Scheduler {
 		}
 		$object = get_post_type_object( $post->post_type );
 		return $object instanceof \WP_Post_Type && ! empty( $object->public );
+	}
+
+	/**
+	 * Rewrite after a post leaves the public set. Content edits keep the debounce.
+	 */
+	private function rewrite_now(): void {
+		if ( self::$rewriting ) {
+			return;
+		}
+		if ( ! is_user_logged_in() && ! $this->trusted_context() ) {
+			return;
+		}
+		self::$rewriting = true;
+		try {
+			$this->rebuild();
+		} finally {
+			self::$rewriting = false;
+		}
 	}
 
 	private function trusted_context(): bool {

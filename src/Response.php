@@ -87,6 +87,9 @@ final class Response {
 	 * Send the response and stop. Callers that only need to inspect it should not call this.
 	 */
 	public function emit(): void {
+		if ( defined( 'AI_READY_TESTING' ) && AI_READY_TESTING ) {
+			throw new Halt( $this ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- test seam, the response is not HTML.
+		}
 		status_header( $this->status );
 		nocache_headers();
 		foreach ( $this->headers as $name => $value ) {

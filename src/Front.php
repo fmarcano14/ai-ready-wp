@@ -193,7 +193,11 @@ final class Front {
 			return null;
 		}
 		$post = get_post( $id );
-		return $post instanceof \WP_Post ? $post : null;
+		// Drafts, private, and scheduled posts are not public URLs. Leave them for WordPress.
+		if ( ! $post instanceof \WP_Post || 'publish' !== $post->post_status ) {
+			return null;
+		}
+		return $post;
 	}
 
 	/**

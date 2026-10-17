@@ -168,8 +168,7 @@ final class AdminPage {
 			array_keys( $this->public_types() )
 		);
 		update_option( self::option_name(), $clean->to_array(), true );
-		wp_safe_redirect( add_query_arg( 'updated', '1', $this->url() ) );
-		exit;
+		$this->finish( add_query_arg( 'updated', '1', $this->url() ) );
 	}
 
 	public function generate(): void {
@@ -182,7 +181,7 @@ final class AdminPage {
 				return ( new Generator() )->run();
 			}
 		);
-		wp_safe_redirect(
+		$this->finish(
 			add_query_arg(
 				array(
 					'generated' => '1',
@@ -191,6 +190,17 @@ final class AdminPage {
 				$this->url()
 			)
 		);
+	}
+
+	/**
+	 * Redirect and stop. Tests intercept this so the suite can keep running.
+	 */
+	private function finish( string $url ): void {
+		if ( defined( 'AI_READY_TESTING' ) && AI_READY_TESTING ) {
+			// The suite already sent output, so a real redirect header would be a warning.
+			throw new \RuntimeException( 'redirect' ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- test signal, not rendered output.
+		}
+		wp_safe_redirect( $url );
 		exit;
 	}
 
