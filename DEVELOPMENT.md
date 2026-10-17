@@ -53,7 +53,7 @@ Activation and a version bump call `flush_rewrite_rules()`. The rules are:
 
 ## Publication
 
-`Publication::is_public_post()` is the gate for Markdown. `is_discoverable_post()` also requires discovery to be on and is the gate for the index. Filters may return false. A true return cannot override a structural rejection.
+`Publication::is_public_post()` is the gate for Markdown. `is_index_candidate()` is that check plus the per-document discoverability filter, and it is what the index lists. `is_discoverable_post()` also requires discovery to be on, which is what the editor meta box reports. Filters may return false. A true return cannot override a structural rejection.
 
 Discovery modes:
 

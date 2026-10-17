@@ -8,6 +8,7 @@
 namespace Fer\AiReady\Tests\Unit;
 
 use Fer\AiReady\Content\MarkdownDocument;
+use Fer\AiReady\Content\MarkdownText;
 use Fer\AiReady\Exclusions;
 use Fer\AiReady\MarkdownUrl;
 use Fer\AiReady\Robots;
@@ -24,6 +25,7 @@ use PHPUnit\Framework\TestCase;
  * @covers \Fer\AiReady\MarkdownUrl
  * @covers \Fer\AiReady\SettingsSanitizer
  * @covers \Fer\AiReady\Content\MarkdownDocument
+ * @covers \Fer\AiReady\Content\MarkdownText
  */
 final class PolicyTest extends TestCase {
 	/**
@@ -155,5 +157,15 @@ final class PolicyTest extends TestCase {
 		$this->assertStringContainsString( 'title: "Say \\"hi\\""', $md );
 		$this->assertStringContainsString( "# Say \"hi\"\n", $md );
 		$this->assertStringContainsString( "Body\n", $md );
+	}
+
+	/**
+	 * Block boundaries keep a space in notes.
+	 *
+	 * @return void
+	 */
+	public function test_plain_text_separates_adjacent_blocks() {
+		$html = '<h2>Welcome</h2><!-- wp:paragraph --><p>This is a <strong>public</strong> page with a <a href="https://example.com/docs">docs link</a>.</p>';
+		$this->assertSame( 'Welcome This is a public page with a docs link.', MarkdownText::plain_text( $html ) );
 	}
 }

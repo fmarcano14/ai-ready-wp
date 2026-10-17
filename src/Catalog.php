@@ -77,7 +77,7 @@ final class Catalog {
 				if ( ! $post instanceof \WP_Post ) {
 					continue;
 				}
-				if ( ! $this->publication->is_discoverable_post( $post ) ) {
+				if ( ! $this->publication->is_index_candidate( $post ) ) {
 					++$skipped;
 					continue;
 				}
@@ -197,11 +197,11 @@ final class Catalog {
 		}
 		$note = '';
 		if ( ! empty( $settings['link_notes'] ) ) {
-			$note = $post->post_excerpt;
-			if ( '' === trim( (string) $note ) ) {
-				$note = wp_trim_words( wp_strip_all_tags( (string) $post->post_content ), 24, '' );
+			$note = MarkdownText::plain_text( $post->post_excerpt );
+			if ( '' === $note ) {
+				$note = MarkdownText::plain_text( $post->post_content );
 			}
-			$note = MarkdownText::single_line( $note );
+			$note = wp_trim_words( $note, 24, '' );
 		}
 		$title = MarkdownText::single_line( get_the_title( $post ) );
 		if ( '' === $title ) {

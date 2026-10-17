@@ -39,6 +39,27 @@ final class MarkdownText {
 	}
 
 	/**
+	 * Plain text for a short note, with a space at each tag boundary.
+	 *
+	 * Adjacent block tags in Gutenberg markup would otherwise glue words
+	 * together (`WelcomeThis`).
+	 *
+	 * @since 1.0.0
+	 *
+	 * @param string $html HTML or plain text.
+	 * @return string
+	 */
+	public static function plain_text( $html ) {
+		$html = preg_replace( '/<!--.*?-->/s', ' ', (string) $html );
+		$html = preg_replace( '/<[^>]*>/', ' ', (string) $html );
+		$html = preg_replace( '/\s+([.,;:!?])/', '$1', (string) $html );
+		if ( ! is_string( $html ) ) {
+			return '';
+		}
+		return self::single_line( $html );
+	}
+
+	/**
 	 * Escape a link label so it cannot close the Markdown link early.
 	 *
 	 * @since 1.0.0

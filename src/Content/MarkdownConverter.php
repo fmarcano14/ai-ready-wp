@@ -199,16 +199,40 @@ final class MarkdownConverter {
 	 * @return string
 	 */
 	private function render_blockquote( \DOMElement $node ) {
-		$inner = trim( $this->render_blocks( $node ) );
-		if ( '' === $inner ) {
+		$clone = $node->cloneNode( true );
+		$cites = array();
+		foreach ( $clone->getElementsByTagName( 'cite' ) as $cite ) {
+			$cites[] = $cite;
+		}
+		$citations = array();
+		foreach ( $cites as $cite ) {
+			$text = trim( $this->render_inline( $cite ) );
+			if ( '' !== $text ) {
+				$citations[] = $text;
+			}
+			if ( null !== $cite->parentNode ) {
+				$cite->parentNode->removeChild( $cite );
+			}
+		}
+
+		$inner = preg_replace( "/\n{3,}/", "\n\n", $this->render_blocks( $clone ) );
+		$inner = trim( is_string( $inner ) ? $inner : '' );
+		$lines = array();
+		if ( '' !== $inner ) {
+			foreach ( explode( "\n", $inner ) as $line ) {
+				$lines[] = '> ' . $line;
+			}
+		}
+		if ( array() !== $citations ) {
+			if ( array() !== $lines && '>' !== $lines[ count( $lines ) - 1 ] ) {
+				$lines[] = '>';
+			}
+			$lines[] = '> — ' . implode( ', ', $citations );
+		}
+		if ( array() === $lines ) {
 			return '';
 		}
-		$lines = explode( "\n", $inner );
-		$out   = array();
-		foreach ( $lines as $line ) {
-			$out[] = '> ' . $line;
-		}
-		return "\n\n" . implode( "\n", $out ) . "\n\n";
+		return "\n\n" . implode( "\n", $lines ) . "\n\n";
 	}
 
 	/**

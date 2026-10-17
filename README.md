@@ -4,6 +4,8 @@ AI Ready WP makes a WordPress site readable by AI assistants from inside wp-admi
 
 Fernando Marcano — [Fer LLC](https://fer.marketing)
 
+![Settings → AI Ready, with a live llms.txt preview](docs/settings.png)
+
 ## What it publishes
 
 | URL | What it is |

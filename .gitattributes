@@ -8,3 +8,4 @@
 /.gitattributes export-ignore
 /.editorconfig export-ignore
 /DEVELOPMENT.md export-ignore
+/docs export-ignore

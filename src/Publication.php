@@ -75,7 +75,24 @@ final class Publication {
 	}
 
 	/**
-	 * Whether a document may be listed in llms.txt.
+	 * Whether a document belongs in the index body.
+	 *
+	 * The site-wide discovery switch controls whether that file is public.
+	 * It does not change which documents the file would list.
+	 *
+	 * @since 1.0.0
+	 *
+	 * @param \WP_Post $post Post object.
+	 * @return bool
+	 */
+	public function is_index_candidate( \WP_Post $post ) {
+		$allowed  = $this->is_public_post( $post );
+		$filtered = apply_filters( 'ai_ready_wp_post_is_discoverable', $allowed, $post );
+		return $allowed && (bool) $filtered;
+	}
+
+	/**
+	 * Whether a document is listed while discovery is currently public.
 	 *
 	 * @since 1.0.0
 	 *
@@ -83,9 +100,7 @@ final class Publication {
 	 * @return bool
 	 */
 	public function is_discoverable_post( \WP_Post $post ) {
-		$allowed  = $this->discovery_enabled() && $this->is_public_post( $post );
-		$filtered = apply_filters( 'ai_ready_wp_post_is_discoverable', $allowed, $post );
-		return $allowed && (bool) $filtered;
+		return $this->discovery_enabled() && $this->is_index_candidate( $post );
 	}
 
 	/**
