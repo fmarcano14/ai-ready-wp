@@ -17,6 +17,19 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class Generator {
 
 	/**
+	 * Documents per query. The rebuild stops after MAX_ITEMS.
+	 * 50 per page and fewer than 10,000 pages is the existing cap.
+	 */
+	public const BATCH_SIZE = 50;
+
+	public const MAX_ITEMS = 499950;
+
+	/**
+	 * Bytes left free before a request rebuild hands the rest to cron.
+	 */
+	private const MEMORY_RESERVE = 33554432;
+
+	/**
 	 * True only while admin, cron, or CLI has opened a rebuild.
 	 *
 	 * @var bool
@@ -48,6 +61,14 @@ final class Generator {
 	}
 
 	/**
+	 * Header for llms-full.txt. The body is streamed from post meta.
+	 */
+	public function preamble(): string {
+		$settings = Settings::current();
+		return ( new LlmsTxt() )->preamble( $this->site_name(), $this->summary( $settings ), $settings->details() );
+	}
+
+	/**
 	 * @param bool $fresh True skips the reuse cache. Manual generate and WP-CLI pass true.
 	 * @return int|\WP_Error Document count, or the storage error. Never a count when the write failed.
 	 */
@@ -57,66 +78,98 @@ final class Generator {
 		}
 
 		$settings          = Settings::current();
-		$posts             = $this->posts( $settings );
 		$reader            = new ContentReader();
 		$converter         = new HtmlToMarkdown();
-		$builder           = new LlmsTxt();
 		$store             = Store::open();
-		$documents         = array();
-		$cache             = array();
+		$rows              = array();
 		$converter_version = $this->converter_version();
+		$done              = 0;
+		$page_number       = 1;
+		$pages             = 1;
 
 		$previous = get_current_user_id();
 		wp_set_current_user( 0 );
 		try {
-			foreach ( $posts as $post ) {
-				$facts = Snapshot::from_post( $post );
-				if ( ! Inclusion::allowed( $facts, $settings->post_types() ) ) {
-					continue;
+			do {
+				if ( $this->should_defer( $done ) ) {
+					return $this->fail( $this->hand_off() );
 				}
-				$id    = (int) $post->ID;
-				$title = $this->title( $post );
-				$stamp = $this->stamp( $post, $settings, $facts, $store );
-				$prior = $store->read_cache( $id );
-				$reuse = ! $fresh && $this->cache_matches( $prior, $stamp, $converter_version );
-				if ( $reuse ) {
-					$page = $prior['markdown'];
-					$note = $prior['note'];
-				} else {
-					$html = Text::strip_shortcodes( $reader->render( $post ) );
-					$body = $converter->convert( $html );
-					$page = LlmsTxt::page( $title, $body );
-					$note = Text::note( (string) $post->post_excerpt, $html, $settings->note_length() );
+				$batch = $this->batch( $settings, $page_number );
+				$pages = $batch['pages'];
+				foreach ( $batch['posts'] as $post ) {
+					if ( $done >= self::MAX_ITEMS ) {
+						break 2;
+					}
+					$facts = Snapshot::from_post( $post );
+					if ( ! Inclusion::allowed( $facts, $settings->post_types() ) ) {
+						continue;
+					}
+					$id    = (int) $post->ID;
+					$title = $this->title( $post );
+					$stamp = $this->stamp( $post, $settings, $facts, $store );
+					$prior = $store->read_cache( $id );
+					$reuse = ! $fresh && $this->cache_matches( $prior, $stamp, $converter_version );
+					if ( $reuse ) {
+						$page = $prior['markdown'];
+						$note = $prior['note'];
+					} else {
+						$html = Text::strip_shortcodes( $reader->render( $post ) );
+						$body = $converter->convert( $html );
+						$page = LlmsTxt::page( $title, $body );
+						$note = Text::note( (string) $post->post_excerpt, $html, $settings->note_length() );
+						unset( $html, $body );
+					}
+					$staged = $store->stage( $id, $page, $stamp, $note, $converter_version, $done );
+					if ( is_wp_error( $staged ) ) {
+						return $this->fail( $staged );
+					}
+					$rows[] = array(
+						'id'       => $id,
+						'title'    => $title,
+						'html'     => $this->html_url( $post ),
+						'markdown' => Urls::markdown( $post ),
+						'note'     => $note,
+						'section'  => $this->section_label( $post ),
+						'optional' => $settings->is_optional( (string) $post->post_type ),
+					);
+					unset( $page, $note, $prior );
+					wp_cache_delete( $id, 'post_meta' );
+					++$done;
 				}
-				$cache[ $id ] = array(
-					'stamp'     => $stamp,
-					'markdown'  => $page,
-					'note'      => $note,
-					'converter' => $converter_version,
-				);
-				$documents[]  = new Document(
-					$id,
-					$title,
-					$this->html_url( $post ),
-					Urls::markdown( $post ),
-					$note,
-					$page,
-					$this->section_label( $post ),
-					$settings->is_optional( (string) $post->post_type )
-				);
-			}
+				unset( $batch );
+				++$page_number;
+			} while ( $page_number <= $pages && $done < self::MAX_ITEMS );
 		} finally {
 			wp_set_current_user( $previous );
 		}
 
-		$catalog = new Catalog( $this->site_name(), $this->summary( $settings ), $settings->details(), $documents );
-		$full    = $settings->write_full() ? $builder->full( $catalog ) : null;
-		$stored  = $store->replace( $builder->index( $catalog ), $full, $documents, $cache );
-		if ( is_wp_error( $stored ) ) {
-			return $stored;
+		$documents = array();
+		$ids       = array();
+		foreach ( $rows as $row ) {
+			$ids[]       = $row['id'];
+			$documents[] = new Document(
+				$row['id'],
+				$row['title'],
+				$row['html'],
+				$row['markdown'],
+				$row['note'],
+				'',
+				$row['section'],
+				$row['optional']
+			);
 		}
-		do_action( 'ai_ready_stored', count( $documents ) );
-		return count( $documents );
+		unset( $rows );
+		$catalog = new Catalog( $this->site_name(), $this->summary( $settings ), $settings->details(), $documents );
+		$index   = ( new LlmsTxt() )->index( $catalog );
+		unset( $documents, $catalog );
+		$stored = $store->commit( $index, $ids );
+		unset( $index );
+		if ( is_wp_error( $stored ) ) {
+			return $this->fail( $stored );
+		}
+		$store->clear_error();
+		do_action( 'ai_ready_stored', count( $ids ) );
+		return count( $ids );
 	}
 
 	private function stamp( \WP_Post $post, Settings $settings, PostFacts $facts, Store $store ): string {
@@ -171,42 +224,107 @@ final class Generator {
 	}
 
 	/**
-	 * @return \WP_Post[]
+	 * @param \WP_Error $error Failure to show and return.
+	 * @return \WP_Error
 	 */
-	private function posts( Settings $settings ): array {
-		$found = array();
-		$page  = 1;
-		$pages = 1;
-		do {
-			$query = new \WP_Query(
-				array(
-					'post_type'              => $settings->post_types(),
-					'post_status'            => 'publish',
-					'posts_per_page'         => 50,
-					'paged'                  => $page,
-					'has_password'           => false,
-					'orderby'                => array(
-						'modified' => 'DESC',
-						'ID'       => 'DESC',
-					),
-					'ignore_sticky_posts'    => true,
-					'suppress_filters'       => true,
-					'no_found_rows'          => false,
-					'update_post_meta_cache' => false,
-					'update_post_term_cache' => false,
-				)
-			);
-			foreach ( $query->posts as $post ) {
-				if ( $post instanceof \WP_Post && '' === (string) $post->post_password ) {
-					$found[] = $post;
-				}
-			}
-			$pages = (int) $query->max_num_pages;
-			wp_reset_postdata();
-			++$page;
-		} while ( $page <= $pages && $page < 10000 );
+	private function fail( \WP_Error $error ) {
+		$message = $error->get_error_message();
+		Store::open()->record_error( is_string( $message ) ? $message : '' );
+		return $error;
+	}
 
-		return $found;
+	/**
+	 * @return \WP_Error
+	 */
+	private function hand_off() {
+		if ( ! wp_next_scheduled( Scheduler::HOOK ) ) {
+			wp_schedule_single_event( time() + 1, Scheduler::HOOK );
+		}
+		return new \WP_Error(
+			'ai_ready_deferred',
+			__( 'AI Ready could not finish this rebuild in the current request. Cron will finish it.', 'ai-ready-wp' )
+		);
+	}
+
+	private function should_defer( int $done ): bool {
+		$force = (bool) apply_filters( 'ai_ready_force_defer', false, $done );
+		if ( $this->in_background() ) {
+			return false;
+		}
+		if ( $force ) {
+			return true;
+		}
+		return $this->memory_is_low();
+	}
+
+	private function in_background(): bool {
+		if ( (bool) apply_filters( 'ai_ready_treat_as_background', false ) ) {
+			return true;
+		}
+		if ( function_exists( 'wp_doing_cron' ) && wp_doing_cron() ) {
+			return true;
+		}
+		return defined( 'WP_CLI' ) && WP_CLI;
+	}
+
+	private function memory_is_low(): bool {
+		if ( ! function_exists( 'wp_convert_hr_to_bytes' ) ) {
+			return false;
+		}
+		$limit = wp_convert_hr_to_bytes( ini_get( 'memory_limit' ) );
+		if ( $limit < 1 ) {
+			return false;
+		}
+		$reserve = (int) apply_filters( 'ai_ready_memory_reserve', self::MEMORY_RESERVE );
+		if ( $reserve < 1 ) {
+			$reserve = self::MEMORY_RESERVE;
+		}
+		return ( memory_get_usage( true ) + $reserve ) >= $limit;
+	}
+
+	private function batch_size(): int {
+		$size = (int) apply_filters( 'ai_ready_batch_size', self::BATCH_SIZE );
+		if ( $size < 1 ) {
+			return self::BATCH_SIZE;
+		}
+		return $size;
+	}
+
+	/**
+	 * @return array{posts: \WP_Post[], pages: int}
+	 */
+	private function batch( Settings $settings, int $page ): array {
+		$query = new \WP_Query(
+			array(
+				'post_type'              => $settings->post_types(),
+				'post_status'            => 'publish',
+				'posts_per_page'         => $this->batch_size(),
+				'paged'                  => $page,
+				'has_password'           => false,
+				'orderby'                => array(
+					'modified' => 'DESC',
+					'ID'       => 'DESC',
+				),
+				'ignore_sticky_posts'    => true,
+				'suppress_filters'       => true,
+				'no_found_rows'          => false,
+				'update_post_meta_cache' => false,
+				'update_post_term_cache' => false,
+			)
+		);
+		$posts = array();
+		foreach ( $query->posts as $post ) {
+			if ( $post instanceof \WP_Post && '' === (string) $post->post_password ) {
+				$posts[] = $post;
+			}
+		}
+		$pages = (int) $query->max_num_pages;
+		wp_reset_postdata();
+		unset( $query );
+		return array(
+			'posts' => $posts,
+			'pages' => $pages,
+		);
 	}
 
 	private function title( \WP_Post $post ): string {

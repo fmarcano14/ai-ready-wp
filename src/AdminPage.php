@@ -120,6 +120,17 @@ final class AdminPage {
 								<input type="checkbox" name="write_full" value="1" <?php checked( $settings->write_full() ); ?> />
 								<?php echo esc_html__( 'Also write llms-full.txt', 'ai-ready-wp' ); ?>
 							</label>
+							<p class="description">
+								<?php
+								echo esc_html(
+									sprintf(
+										/* translators: %s: maximum number of documents */
+										__( 'Assembled on request from each document, up to %s items. It is not stored as one database row.', 'ai-ready-wp' ),
+										number_format_i18n( Generator::MAX_ITEMS )
+									)
+								);
+								?>
+							</p>
 						</td>
 					</tr>
 					<tr>
@@ -237,12 +248,10 @@ final class AdminPage {
 		if ( isset( $_GET['updated'] ) && '1' === sanitize_text_field( wp_unslash( $_GET['updated'] ) ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			echo '<div class="notice notice-success"><p>' . esc_html__( 'Settings saved.', 'ai-ready-wp' ) . '</p></div>';
 		}
-		if ( isset( $_GET['ai_ready_error'] ) && '1' === sanitize_text_field( wp_unslash( $_GET['ai_ready_error'] ) ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-			$stored  = get_transient( Store::ERROR_TRANSIENT );
-			$message = is_string( $stored ) && '' !== $stored
-				? $stored
-				: __( 'AI Ready could not save the generated output.', 'ai-ready-wp' );
-			echo '<div class="notice notice-error"><p>' . esc_html( $message ) . '</p></div>';
+		$error = Store::open()->last_error();
+		if ( is_array( $error ) ) {
+			$when = $error['time'] > 0 ? ' ' . gmdate( 'Y-m-d H:i:s', $error['time'] ) . ' UTC' : '';
+			echo '<div class="notice notice-error"><p>' . esc_html( $error['message'] . $when ) . '</p></div>';
 		}
 		if ( isset( $_GET['generated'] ) && '1' === sanitize_text_field( wp_unslash( $_GET['generated'] ) ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			$count = isset( $_GET['count'] ) ? absint( wp_unslash( $_GET['count'] ) ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended

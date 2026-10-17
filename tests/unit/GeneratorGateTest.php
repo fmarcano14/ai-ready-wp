@@ -15,6 +15,11 @@ use PHPUnit\Framework\TestCase;
  */
 final class GeneratorGateTest extends TestCase {
 
+	public function test_the_document_cap_is_the_old_query_limit(): void {
+		$this->assertSame( 50, Generator::BATCH_SIZE );
+		$this->assertSame( 499950, Generator::MAX_ITEMS );
+	}
+
 	public function test_a_normal_call_is_not_allowed_to_generate(): void {
 		$this->assertFalse( Generator::generation_allowed() );
 	}

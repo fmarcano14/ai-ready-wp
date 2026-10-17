@@ -38,7 +38,7 @@ No. AI Ready WP is a single-site plugin. Activating it on a network stops and sh
 
 = Does it send content anywhere? =
 
-No. The generated text is stored in the database on this server and served only through the plugin.
+No. llms.txt and each Markdown document are stored in the database on this server. llms-full.txt is streamed from those documents when it is requested. The plugin serves them only through its own URLs.
 
 = When do the files refresh? =
 

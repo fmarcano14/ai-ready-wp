@@ -28,12 +28,21 @@ final class Response {
 	private string $body;
 
 	/**
-	 * @param array<string, string> $headers Headers.
+	 * Writes the body in chunks when the payload must not be held in one string.
+	 *
+	 * @var callable|null
 	 */
-	public function __construct( int $status, array $headers, string $body ) {
-		$this->status  = $status;
-		$this->headers = $headers;
-		$this->body    = $body;
+	private $streamer;
+
+	/**
+	 * @param array<string, string> $headers  Headers.
+	 * @param callable|null         $streamer Optional chunk writer. Receives a write callback.
+	 */
+	public function __construct( int $status, array $headers, string $body, $streamer = null ) {
+		$this->status   = $status;
+		$this->headers  = $headers;
+		$this->body     = $body;
+		$this->streamer = is_callable( $streamer ) ? $streamer : null;
 	}
 
 	public function status(): int {
@@ -41,6 +50,16 @@ final class Response {
 	}
 
 	public function body(): string {
+		if ( is_callable( $this->streamer ) ) {
+			$out = '';
+			call_user_func(
+				$this->streamer,
+				static function ( $chunk ) use ( &$out ) {
+					$out .= $chunk;
+				}
+			);
+			return $out;
+		}
 		return $this->body;
 	}
 
@@ -96,7 +115,16 @@ final class Response {
 			header( $name . ': ' . $value, 'Link' !== $name );
 		}
 		// Markdown and plain text, not HTML.
-		echo $this->body; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+		if ( is_callable( $this->streamer ) ) {
+			call_user_func(
+				$this->streamer,
+				static function ( $chunk ) {
+					echo $chunk; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+				}
+			);
+		} else {
+			echo $this->body; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+		}
 		exit;
 	}
 

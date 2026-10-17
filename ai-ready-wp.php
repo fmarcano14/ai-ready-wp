@@ -20,6 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 define( 'AI_READY_VERSION', '1.0.0' );
 define( 'AI_READY_FILE', __FILE__ );
 define( 'AI_READY_CONVERTER', '1' );
+define( 'AI_READY_SCHEMA', '2' );
 
 /**
  * Load plugin classes without Composer so a normal install does not need vendor/.
@@ -54,6 +55,7 @@ function ai_ready_boot() {
 	}
 	( new AiReady\Front() )->register();
 	( new AiReady\Scheduler() )->register();
+	ai_ready_maybe_upgrade();
 	if ( is_admin() ) {
 		( new AiReady\AdminPage() )->register();
 		( new AiReady\ExcludeMeta() )->register();
@@ -100,6 +102,26 @@ function ai_ready_remove_rewrite_rules() {
 	}
 	foreach ( array( '^llms\.txt$', '^llms-full\.txt$' ) as $regex ) {
 		unset( $wp_rewrite->extra_rules_top[ $regex ], $wp_rewrite->extra_rules[ $regex ] );
+	}
+}
+
+/**
+ * When the stored schema changes, drop the old full-file row and schedule a rebuild.
+ * Routes then recover without a click on Generate.
+ */
+function ai_ready_maybe_upgrade() {
+	$schema = defined( 'AI_READY_SCHEMA' ) ? (string) AI_READY_SCHEMA : '2';
+	$stored = get_option( \AiReady\Store::SCHEMA_OPTION, '' );
+	if ( ! is_string( $stored ) ) {
+		$stored = '';
+	}
+	if ( $stored === $schema ) {
+		return;
+	}
+	update_option( \AiReady\Store::SCHEMA_OPTION, $schema, false );
+	delete_option( \AiReady\Store::FULL_OPTION );
+	if ( ! wp_next_scheduled( \AiReady\Scheduler::HOOK ) ) {
+		wp_schedule_single_event( time() + \AiReady\Scheduler::DELAY, \AiReady\Scheduler::HOOK );
 	}
 }
 

@@ -16,13 +16,13 @@ Pretty permalinks produce `/sample-post.md`. Plain permalinks produce `?format=m
 
 ## Usage
 
-- **Settings > AI Ready** chooses the summary, the optional details, which public post types are included, which of those belong under Optional, whether to write `llms-full.txt`, and the note length.
+- **Settings > AI Ready** chooses the summary, the optional details, which public post types are included, which of those belong under Optional, whether to publish `llms-full.txt`, and the note length. A rebuild includes at most 499,950 documents.
 - On each post or page, **Exclude from AI files** leaves that document out. A noindex flag from Yoast, Rank Math, SEOPress, All in One SEO, or The SEO Framework does the same.
 - `wp ai-ready generate` rebuilds the files. `wp ai-ready status` prints whether they exist.
 - Saving a public post schedules one rebuild 30 seconds later. Unpublishing, adding a password, excluding a document, or marking it noindex updates the files in that same request.
 - Deleting the plugin removes its settings, the exclude flag, the scheduled rebuild, and the generated files.
 
-`llms.txt`, `llms-full.txt`, and each document's Markdown are stored in the database and served only through the plugin. There is no file under uploads for the web server to fetch. The public URLs are `/llms.txt`, `/llms-full.txt`, and the Markdown views.
+`llms.txt` and each document's Markdown are stored in the database. `llms-full.txt` is not stored: the plugin streams it from those documents when someone requests it, and sends an ETag so an unchanged copy can answer 304. Nothing is a file under uploads. The public URLs are `/llms.txt`, `/llms-full.txt`, and the Markdown views.
 
 ## Sample llms.txt
 
@@ -46,7 +46,7 @@ One new recipe each week. Older posts stay in the archive.
 ## Design
 
 Inclusion, notes, and the llms.txt builder are pure PHP and do not load WordPress.
-The plugin reads posts, stores the generated text in the database, and serves it through its own routes.
+The plugin reads posts in batches, stores llms.txt and each Markdown document in the database, and streams llms-full.txt from that stored Markdown.
 Visitors never trigger a rebuild: edits wait on one cron event, and unpublishing, a password, or an exclude flag rewrites the files in that request.
 
 ## License

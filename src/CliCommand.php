@@ -58,12 +58,32 @@ final class CliCommand {
 	 */
 	public function status( $args, $assoc ): void {
 		unset( $args, $assoc );
+		foreach ( $this->status_lines() as $line ) {
+			\WP_CLI::log( $line );
+		}
+	}
+
+	/**
+	 * @return string[]
+	 */
+	public function status_lines(): array {
 		$store = Store::open();
 		$when  = $store->generated_at();
-		\WP_CLI::log( 'Single-site plugin.' );
-		\WP_CLI::log( 'llms.txt: ' . ( $store->has_index() ? 'yes' : 'no' ) );
-		\WP_CLI::log( 'llms-full.txt: ' . ( $store->has_full() ? 'yes' : 'no' ) );
-		\WP_CLI::log( 'documents: ' . (string) count( $store->document_ids() ) );
-		\WP_CLI::log( 'generated_at: ' . ( $when ? gmdate( 'c', $when ) : 'never' ) );
+		$error = $store->last_error();
+		$lines = array(
+			'Single-site plugin.',
+			'llms.txt: ' . ( $store->has_index() ? 'yes' : 'no' ),
+			'llms-full.txt: ' . ( $store->has_full() ? 'yes' : 'no' ),
+			'documents: ' . (string) count( $store->document_ids() ),
+			'generated_at: ' . ( $when ? gmdate( 'c', $when ) : 'never' ),
+			'max_items: ' . (string) Generator::MAX_ITEMS,
+		);
+		if ( is_array( $error ) ) {
+			$lines[] = 'last_error: ' . $error['message'];
+			$lines[] = 'last_error_at: ' . gmdate( 'c', $error['time'] );
+		} else {
+			$lines[] = 'last_error: none';
+		}
+		return $lines;
 	}
 }

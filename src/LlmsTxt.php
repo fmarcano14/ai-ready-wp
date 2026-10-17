@@ -57,8 +57,16 @@ final class LlmsTxt {
 		return rtrim( implode( "\n", $lines ) ) . "\n";
 	}
 
+	/**
+	 * Header shared by llms.txt and llms-full.txt, without the document bodies.
+	 */
+	public function preamble( string $name, string $summary, string $details ): string {
+		$catalog = new Catalog( $name, $summary, $details, array() );
+		return rtrim( implode( "\n", $this->header_lines( $catalog ) ) );
+	}
+
 	public function full( Catalog $catalog ): string {
-		$parts = array( rtrim( implode( "\n", $this->header_lines( $catalog ) ) ) );
+		$parts = array( $this->preamble( $catalog->name(), $catalog->summary(), $catalog->details() ) );
 		foreach ( $catalog->documents() as $document ) {
 			$parts[] = rtrim( $document->markdown() );
 		}

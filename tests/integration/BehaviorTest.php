@@ -134,6 +134,9 @@ class BehaviorTest extends WP_UnitTestCase {
 		remove_shortcode( 'who' );
 		remove_all_filters( 'ai_ready_block_store' );
 		remove_all_filters( 'ai_ready_converter_version' );
+		remove_all_filters( 'ai_ready_force_defer' );
+		remove_all_filters( 'ai_ready_batch_size' );
+		remove_all_filters( 'ai_ready_treat_as_background' );
 		Store::open()->destroy();
 		wp_clear_scheduled_hook( Scheduler::HOOK );
 		parent::tear_down();
@@ -289,7 +292,10 @@ class BehaviorTest extends WP_UnitTestCase {
 		$markdown = $store->read_document( $this->public_id );
 		$this->assertIsString( $markdown );
 		$this->assertSame( $store->read_index(), get_option( Store::INDEX_OPTION ) );
-		$this->assertSame( $store->read_full(), get_option( Store::FULL_OPTION ) );
+		$this->assertFalse( get_option( Store::FULL_OPTION ) );
+		$full = $store->read_full();
+		$this->assertIsString( $full );
+		$this->assertStringContainsString( 'user-0', $full );
 		$this->assertSame( $markdown, get_post_meta( $this->public_id, Store::META_MARKDOWN, true ) );
 
 		wp_cache_delete( 'alloptions', 'options' );
@@ -297,6 +303,7 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertArrayNotHasKey( Store::INDEX_OPTION, $autoloaded );
 		$this->assertArrayNotHasKey( Store::FULL_OPTION, $autoloaded );
 		$this->assertArrayNotHasKey( Store::GENERATED_OPTION, $autoloaded );
+		$this->assertArrayNotHasKey( Store::STAMP_OPTION, $autoloaded );
 
 		$uploads = wp_upload_dir( null, false );
 		$this->assertIsArray( $uploads );
@@ -618,6 +625,178 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'Saved summary', $index );
 	}
 
+	public function test_full_file_streams_without_one_big_row(): void {
+		$pad = str_repeat( 'alpha ', 8000 );
+		for ( $i = 0; $i < 8; $i++ ) {
+			$this->publish( 'post', 'Big ' . $i, 'big-' . $i, '<p>BIG-MARKER-' . $i . ' ' . $pad . '</p>' );
+		}
+		$this->generate();
+		$this->assertFalse( get_option( Store::FULL_OPTION ) );
+
+		global $wpdb;
+		$max = (int) $wpdb->get_var( "SELECT MAX(CHAR_LENGTH(option_value)) FROM {$wpdb->options} WHERE option_name LIKE 'ai_ready%'" );
+		$this->assertGreaterThan( 0, $max );
+		$this->assertLessThan( 200000, $max );
+
+		$before = memory_get_usage();
+		$peak   = $before;
+		$bytes  = 0;
+		$saw0   = false;
+		$saw7   = false;
+		Store::open()->stream_full(
+			( new Generator() )->preamble(),
+			static function ( $chunk ) use ( &$peak, &$bytes, &$saw0, &$saw7 ) {
+				$bytes += strlen( (string) $chunk );
+				$peak   = max( $peak, memory_get_usage() );
+				if ( false !== strpos( (string) $chunk, 'BIG-MARKER-0' ) ) {
+					$saw0 = true;
+				}
+				if ( false !== strpos( (string) $chunk, 'BIG-MARKER-7' ) ) {
+					$saw7 = true;
+				}
+			}
+		);
+		$this->assertGreaterThan( 200000, $bytes );
+		$this->assertLessThan( (int) ( $bytes / 2 ), $peak - $before );
+		$this->assertTrue( $saw0 );
+		$this->assertTrue( $saw7 );
+
+		$_SERVER['REQUEST_URI'] = '/llms-full.txt';
+		$served                 = ( new Front() )->serve_path();
+		$this->assertInstanceOf( Response::class, $served );
+		$etag = $served->header( 'ETag' );
+		$this->assertNotSame( '', $etag );
+		$this->assertNotSame( '', $served->header( 'Last-Modified' ) );
+		$_SERVER['HTTP_IF_NONE_MATCH'] = $etag;
+		$again                         = ( new Front() )->serve_path();
+		$this->assertInstanceOf( Response::class, $again );
+		$this->assertSame( 304, $again->status() );
+		$this->assertSame( '', $again->body() );
+		unset( $_SERVER['HTTP_IF_NONE_MATCH'] );
+	}
+
+	public function test_a_request_rebuild_hands_the_rest_to_cron(): void {
+		add_filter(
+			'ai_ready_batch_size',
+			static function () {
+				return 1;
+			}
+		);
+		add_filter(
+			'ai_ready_force_defer',
+			static function ( $defer, $done ) {
+				unset( $defer );
+				return $done >= 1;
+			},
+			10,
+			2
+		);
+		$before = $this->index();
+		$result = Generator::trusted(
+			static function () {
+				return ( new Generator() )->run();
+			}
+		);
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 'ai_ready_deferred', $result->get_error_code() );
+		$this->assertSame( $before, $this->index() );
+		$this->assertNotFalse( wp_next_scheduled( Scheduler::HOOK ) );
+		$error = Store::open()->last_error();
+		$this->assertIsArray( $error );
+		$this->assertStringContainsString( 'Cron will finish', $error['message'] );
+		$this->assertGreaterThan( 0, $error['time'] );
+
+		ob_start();
+		( new AdminPage() )->render();
+		$html = (string) ob_get_clean();
+		$this->assertStringContainsString( 'notice-error', $html );
+		$this->assertStringContainsString( 'Cron will finish', $html );
+		$status = implode( "\n", ( new CliCommand() )->status_lines() );
+		$this->assertStringContainsString( 'Cron will finish', $status );
+		$this->assertStringContainsString( 'max_items: 499950', $status );
+
+		remove_all_filters( 'ai_ready_force_defer' );
+		remove_all_filters( 'ai_ready_batch_size' );
+		do_action( Scheduler::HOOK );
+		$this->assertNull( Store::open()->last_error() );
+		$this->assertStringContainsString( 'cafe-nino.md', $this->index() );
+	}
+
+	public function test_cron_rebuild_failures_stay_visible_until_the_next_success(): void {
+		add_filter(
+			'ai_ready_block_store',
+			static function ( $block, $key ) {
+				return 'ai_ready_llms_txt' === $key ? true : $block;
+			},
+			10,
+			2
+		);
+		do_action( Scheduler::HOOK );
+		$error = Store::open()->last_error();
+		$this->assertIsArray( $error );
+		$this->assertStringContainsString( 'could not save llms.txt', $error['message'] );
+		$this->assertGreaterThan( 0, $error['time'] );
+
+		ob_start();
+		( new AdminPage() )->render();
+		$html = (string) ob_get_clean();
+		$this->assertStringContainsString( 'notice-error', $html );
+		$this->assertStringContainsString( 'could not save llms.txt', $html );
+		$status = implode( "\n", ( new CliCommand() )->status_lines() );
+		$this->assertStringContainsString( 'could not save llms.txt', $status );
+
+		remove_all_filters( 'ai_ready_block_store' );
+		do_action( Scheduler::HOOK );
+		$this->assertNull( Store::open()->last_error() );
+		$clean = implode( "\n", ( new CliCommand() )->status_lines() );
+		$this->assertStringContainsString( 'last_error: none', $clean );
+	}
+
+	public function test_a_schema_change_schedules_a_rebuild(): void {
+		wp_clear_scheduled_hook( Scheduler::HOOK );
+		update_option( Store::SCHEMA_OPTION, '1', false );
+		update_option( Store::FULL_OPTION, 'OLD-FULL-ROW', false );
+		ai_ready_maybe_upgrade();
+		$this->assertSame( AI_READY_SCHEMA, get_option( Store::SCHEMA_OPTION ) );
+		$this->assertFalse( get_option( Store::FULL_OPTION ) );
+		$scheduled = wp_next_scheduled( Scheduler::HOOK );
+		$this->assertNotFalse( $scheduled );
+		ai_ready_maybe_upgrade();
+		$this->assertSame( $scheduled, wp_next_scheduled( Scheduler::HOOK ) );
+	}
+
+	public function test_a_leftover_folder_that_cannot_be_removed_is_only_a_warning(): void {
+		$uploads = wp_upload_dir( null, false );
+		$this->assertIsArray( $uploads );
+		$public = trailingslashit( (string) $uploads['basedir'] ) . 'ai-ready/current';
+		wp_mkdir_p( $public );
+		file_put_contents( $public . '/llms.txt', "STUCK\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- plants a leftover directory.
+
+		$log      = tempnam( sys_get_temp_dir(), 'ai-ready-log' );
+		$previous = ini_get( 'error_log' );
+		ini_set( 'error_log', (string) $log );
+		add_filter(
+			'ai_ready_block_store',
+			static function ( $block, $key ) {
+				return 'legacy' === $key ? true : $block;
+			},
+			10,
+			2
+		);
+		$result = $this->generate();
+		ini_set( 'error_log', (string) $previous );
+		remove_all_filters( 'ai_ready_block_store' );
+
+		$this->assertGreaterThan( 0, $result );
+		$this->assertNull( Store::open()->last_error() );
+		$this->assertFileExists( $public . '/llms.txt' );
+		$logged = is_string( $log ) ? (string) file_get_contents( $log ) : '';
+		$this->assertStringContainsString( 'Could not remove an old generated folder', $logged );
+		if ( is_string( $log ) ) {
+			unlink( $log ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- test log file.
+		}
+	}
+
 	public function test_uninstall_removes_plugin_data(): void {
 		update_post_meta( $this->public_id, ExcludeMeta::META_KEY, '1' );
 		set_transient( 'ai_ready_rebuild', '1', MINUTE_IN_SECONDS );
@@ -634,6 +813,9 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertFalse( get_option( Store::INDEX_OPTION ) );
 		$this->assertFalse( get_option( Store::FULL_OPTION ) );
 		$this->assertFalse( get_option( Store::GENERATED_OPTION ) );
+		$this->assertFalse( get_option( Store::STAMP_OPTION ) );
+		$this->assertFalse( get_option( Store::SCHEMA_OPTION ) );
+		$this->assertFalse( get_option( Store::ERROR_OPTION ) );
 		$this->assertFalse( get_option( Store::EPOCH_OPTION ) );
 		$this->assertSame( '', (string) get_post_meta( $this->public_id, ExcludeMeta::META_KEY, true ) );
 		$this->assertSame( '', (string) get_post_meta( $this->public_id, Store::META_MARKDOWN, true ) );

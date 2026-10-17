@@ -43,7 +43,7 @@ final class Scheduler {
 		add_action( 'transition_post_status', array( $this, 'drop_hidden' ), 10, 3 );
 		add_action( 'added_post_meta', array( $this, 'drop_meta' ), 10, 4 );
 		add_action( 'updated_post_meta', array( $this, 'drop_meta' ), 10, 4 );
-		add_action( self::HOOK, array( $this, 'rebuild' ) );
+		add_action( self::HOOK, array( $this, 'rebuild_from_cron' ) );
 		add_action( 'shutdown', array( $this, 'flush_pending' ) );
 	}
 
@@ -150,6 +150,18 @@ final class Scheduler {
 			return;
 		}
 		$this->coalesce();
+	}
+
+	/**
+	 * Cron is the place a request hands unfinished work to. It does not defer again.
+	 */
+	public function rebuild_from_cron(): void {
+		add_filter( 'ai_ready_treat_as_background', '__return_true' );
+		try {
+			$this->rebuild();
+		} finally {
+			remove_filter( 'ai_ready_treat_as_background', '__return_true' );
+		}
 	}
 
 	public function rebuild(): void {

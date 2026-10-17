@@ -225,9 +225,21 @@ if [[ "$INDEX_OPT" != "$HIDDEN" ]]; then
 fi
 assert_contains "$INDEX_OPT" "CHANGED-UNIQUE-STRING" "index option"
 assert_lacks "$INDEX_OPT" "cafe-nino.md" "index option dropped the password"
-FULL_OPT="$(command wp option get ai_ready_llms_full --path="$SITE")"
-assert_contains "$FULL_OPT" "hidden body" "full option"
-AUTO="$(command wp db query "SELECT autoload FROM ${PREFIX}options WHERE option_name IN ('ai_ready_llms_txt','ai_ready_llms_full','ai_ready_generated_at')" --path="$SITE" --skip-column-names)"
+if command wp option get ai_ready_llms_full --path="$SITE" >/dev/null 2>&1; then
+	echo "FAIL llms-full.txt is stored as one option" >&2
+	exit 1
+fi
+SERVED_FULL="$(curl -fsS "$BASE/llms-full.txt")"
+assert_contains "$SERVED_FULL" "hidden body" "streamed full file"
+FULL_HEADERS="$(curl -fsSI "$BASE/llms-full.txt" | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
+assert_contains "$FULL_HEADERS" "etag:" "full etag"
+ETAG="$(printf '%s\n' "$FULL_HEADERS" | awk 'BEGIN{IGNORECASE=1} /^etag:/ { sub(/^[^:]+:[[:space:]]*/, ""); print; exit }')"
+CODE304="$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: ${ETAG}" "$BASE/llms-full.txt")"
+if [[ "$CODE304" != "304" ]]; then
+	echo "FAIL full file 304 was $CODE304" >&2
+	exit 1
+fi
+AUTO="$(command wp db query "SELECT autoload FROM ${PREFIX}options WHERE option_name IN ('ai_ready_llms_txt','ai_ready_generated_at','ai_ready_build_stamp')" --path="$SITE" --skip-column-names)"
 if [[ -z "${AUTO//[[:space:]]/}" ]]; then
 	echo "FAIL could not read autoload flags" >&2
 	exit 1

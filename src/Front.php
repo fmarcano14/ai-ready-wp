@@ -153,7 +153,7 @@ final class Front {
 			return $this->stored( 'llms.txt' );
 		}
 		if ( Route::FULL === $decision['action'] ) {
-			return $this->stored( 'llms-full.txt' );
+			return $this->full_file();
 		}
 		if ( ! $post instanceof \WP_Post ) {
 			return Response::not_found();
@@ -170,12 +170,59 @@ final class Front {
 	}
 
 	private function stored( string $name ): Response {
-		$store = Store::open();
-		$body  = 'llms.txt' === $name ? $store->read_index() : $store->read_full();
+		unset( $name );
+		$body = Store::open()->read_index();
 		if ( null === $body ) {
 			return Response::not_found();
 		}
 		return Response::plain( $body );
+	}
+
+	private function full_file(): Response {
+		$store = Store::open();
+		if ( ! $store->has_full() ) {
+			return Response::not_found();
+		}
+		$modified = $store->generated_at();
+		$etag     = $store->etag();
+		$headers  = array(
+			'Content-Type'  => 'text/plain; charset=utf-8',
+			'Cache-Control' => 'no-cache',
+			'ETag'          => $etag,
+		);
+		if ( $modified > 0 ) {
+			$headers['Last-Modified'] = gmdate( 'D, d M Y H:i:s', $modified ) . ' GMT';
+		}
+		if ( $this->client_has_current( $etag, $modified ) ) {
+			return new Response( 304, $headers, '' );
+		}
+		$preamble = ( new Generator() )->preamble();
+		return new Response(
+			200,
+			$headers,
+			'',
+			static function ( $write ) use ( $store, $preamble ) {
+				$store->stream_full( $preamble, $write );
+			}
+		);
+	}
+
+	private function client_has_current( string $etag, int $modified ): bool {
+		$match = isset( $_SERVER['HTTP_IF_NONE_MATCH'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_IF_NONE_MATCH'] ) ) : '';
+		if ( '' !== $match ) {
+			foreach ( explode( ',', $match ) as $part ) {
+				$part = trim( $part );
+				if ( '*' === $part || $etag === $part || ( 'W/' . $etag ) === $part ) {
+					return true;
+				}
+			}
+			return false;
+		}
+		if ( $modified < 1 || ! isset( $_SERVER['HTTP_IF_MODIFIED_SINCE'] ) ) {
+			return false;
+		}
+		$since = strtotime( sanitize_text_field( wp_unslash( $_SERVER['HTTP_IF_MODIFIED_SINCE'] ) ) );
+		return false !== $since && $since >= $modified;
 	}
 
 	private function included( \WP_Post $post ): bool {

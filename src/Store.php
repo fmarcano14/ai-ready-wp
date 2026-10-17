@@ -12,8 +12,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * llms.txt and llms-full.txt are options. Each document's Markdown is post meta.
- * Neither is autoloaded. Nothing here is a file the web server can fetch.
+ * llms.txt is one option. Each document's Markdown is post meta.
+ * llms-full.txt is not stored. It is streamed from that meta.
+ * Nothing here is autoloaded, and nothing is a file the web server can fetch.
  */
 final class Store {
 
@@ -23,7 +24,13 @@ final class Store {
 
 	public const GENERATED_OPTION = 'ai_ready_generated_at';
 
+	public const STAMP_OPTION = 'ai_ready_build_stamp';
+
+	public const SCHEMA_OPTION = 'ai_ready_schema';
+
 	public const EPOCH_OPTION = 'ai_ready_cache_epoch';
+
+	public const ERROR_OPTION = 'ai_ready_last_error';
 
 	public const ERROR_TRANSIENT = 'ai_ready_last_error';
 
@@ -34,6 +41,18 @@ final class Store {
 	public const META_NOTE = '_ai_ready_note';
 
 	public const META_CONVERTER = '_ai_ready_converter';
+
+	public const META_POSITION = '_ai_ready_position';
+
+	public const META_NEXT_MARKDOWN = '_ai_ready_next_markdown';
+
+	public const META_NEXT_STAMP = '_ai_ready_next_stamp';
+
+	public const META_NEXT_NOTE = '_ai_ready_next_note';
+
+	public const META_NEXT_CONVERTER = '_ai_ready_next_converter';
+
+	public const META_NEXT_POSITION = '_ai_ready_next_position';
 
 	public static function open(): self {
 		return new self();
@@ -63,55 +82,61 @@ final class Store {
 	}
 
 	/**
-	 * Swap in the new copy, confirm it, then drop anything it replaces.
+	 * Write one document into the staging meta. The live copy stays until commit().
 	 *
-	 * A failed step returns WP_Error and leaves the previous copy in place.
-	 *
-	 * @param Document[]                        $documents Documents to keep.
-	 * @param array<int, array<string, string>> $cache     Per-document reuse records.
 	 * @return true|\WP_Error
 	 */
-	public function replace( string $index, ?string $full, array $documents, array $cache = array() ) {
-		$kept = array();
-		foreach ( $documents as $document ) {
-			if ( ! $document instanceof Document || $document->id() < 1 ) {
-				continue;
-			}
-			$id        = $document->id();
-			$row       = ( isset( $cache[ $id ] ) && is_array( $cache[ $id ] ) ) ? $cache[ $id ] : array();
-			$stamp     = ( isset( $row['stamp'] ) && is_string( $row['stamp'] ) ) ? $row['stamp'] : '';
-			$note      = ( isset( $row['note'] ) && is_string( $row['note'] ) ) ? $row['note'] : $document->note();
-			$converter = ( isset( $row['converter'] ) && is_string( $row['converter'] ) ) ? $row['converter'] : '';
-			$written   = $this->write_meta( $id, self::META_MARKDOWN, $document->markdown() )
-				&& $this->write_meta( $id, self::META_STAMP, $stamp )
-				&& $this->write_meta( $id, self::META_NOTE, $note )
-				&& $this->write_meta( $id, self::META_CONVERTER, $converter );
-			if ( ! $written ) {
-				return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not save a document.', 'ai-ready-wp' ) );
-			}
-			$kept[] = $id;
+	public function stage( int $id, string $markdown, string $stamp, string $note, string $converter, int $position ) {
+		if ( $id < 1 ) {
+			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not save a document.', 'ai-ready-wp' ) );
 		}
+		$written = $this->write_meta( $id, self::META_NEXT_MARKDOWN, $markdown )
+			&& $this->write_meta( $id, self::META_NEXT_STAMP, $stamp )
+			&& $this->write_meta( $id, self::META_NEXT_NOTE, $note )
+			&& $this->write_meta( $id, self::META_NEXT_CONVERTER, $converter )
+			&& $this->write_meta( $id, self::META_NEXT_POSITION, (string) $position );
+		if ( ! $written ) {
+			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not save a document.', 'ai-ready-wp' ) );
+		}
+		return true;
+	}
 
+	/**
+	 * Publish staged documents, then the index. llms-full.txt is not stored.
+	 *
+	 * A failed step returns WP_Error and leaves the previous index in place
+	 * when the failure happens before that write.
+	 *
+	 * @param int[] $ids Document ids in display order. Their staged meta is already written.
+	 * @return true|\WP_Error
+	 */
+	public function commit( string $index, array $ids ) {
+		$clean = array();
+		foreach ( $ids as $id ) {
+			$id = (int) $id;
+			if ( $id > 0 ) {
+				$clean[] = $id;
+			}
+		}
+		if ( ! $this->swap( $clean ) ) {
+			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not save a document.', 'ai-ready-wp' ) );
+		}
 		if ( ! $this->write_option( self::INDEX_OPTION, $index ) ) {
 			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not save llms.txt.', 'ai-ready-wp' ) );
 		}
-		if ( null === $full ) {
-			$full_ok = $this->clear_option( self::FULL_OPTION );
-		} else {
-			$full_ok = $this->write_option( self::FULL_OPTION, $full );
-		}
-		if ( ! $full_ok ) {
-			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not save llms-full.txt.', 'ai-ready-wp' ) );
-		}
-		if ( ! $this->write_option( self::GENERATED_OPTION, (string) time() ) ) {
+		$when = (string) time();
+		if ( ! $this->write_option( self::GENERATED_OPTION, $when ) ) {
 			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not save the generation time.', 'ai-ready-wp' ) );
 		}
-		if ( ! $this->delete_stale( $kept ) ) {
+		$stamp = hash( 'sha256', $index . '|' . (string) count( $clean ) . '|' . $when );
+		if ( ! $this->write_option( self::STAMP_OPTION, $stamp ) ) {
+			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not save the generation time.', 'ai-ready-wp' ) );
+		}
+		if ( ! $this->delete_stale( $clean ) ) {
 			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not remove the previous documents.', 'ai-ready-wp' ) );
 		}
-		if ( ! $this->remove_legacy() ) {
-			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not remove the previous files.', 'ai-ready-wp' ) );
-		}
+		delete_option( self::FULL_OPTION );
+		$this->remove_legacy();
 		delete_transient( self::ERROR_TRANSIENT );
 		return true;
 	}
@@ -121,7 +146,60 @@ final class Store {
 	}
 
 	public function read_full(): ?string {
-		return $this->read_option( self::FULL_OPTION );
+		if ( ! $this->has_full() ) {
+			return null;
+		}
+		$preamble = ( new Generator() )->preamble();
+		$body     = '';
+		$this->stream_full(
+			$preamble,
+			static function ( $chunk ) use ( &$body ) {
+				$body .= $chunk;
+			}
+		);
+		return $body;
+	}
+
+	/**
+	 * Echo llms-full.txt in small pieces. The caller writes each chunk and drops it.
+	 *
+	 * @param callable $write Receives one string chunk.
+	 */
+	public function stream_full( string $preamble, $write ): void {
+		if ( ! is_callable( $write ) ) {
+			return;
+		}
+		$write( rtrim( $preamble ) );
+		$after = -1;
+		$count = 0;
+		$limit = Generator::MAX_ITEMS;
+		while ( $count < $limit ) {
+			$batch = $this->positions_after( $after, Generator::BATCH_SIZE );
+			if ( array() === $batch ) {
+				break;
+			}
+			foreach ( $batch as $row ) {
+				if ( $count >= $limit ) {
+					break 2;
+				}
+				$markdown = $this->markdown_column( (int) $row['id'] );
+				$piece    = "\n\n" . rtrim( $markdown );
+				unset( $markdown );
+				$write( $piece );
+				unset( $piece );
+				$after = $row['position'];
+				++$count;
+			}
+		}
+		$write( "\n" );
+	}
+
+	public function etag(): string {
+		$stamp = get_option( self::STAMP_OPTION, '' );
+		if ( ! is_string( $stamp ) || '' === $stamp ) {
+			$stamp = hash( 'sha256', (string) $this->generated_at() );
+		}
+		return '"' . $stamp . '"';
 	}
 
 	/**
@@ -162,7 +240,46 @@ final class Store {
 	}
 
 	public function has_full(): bool {
-		return is_string( get_option( self::FULL_OPTION, null ) );
+		if ( ! $this->has_index() ) {
+			return false;
+		}
+		return Settings::current()->write_full();
+	}
+
+	/**
+	 * @return array{message: string, time: int}|null
+	 */
+	public function last_error(): ?array {
+		$stored = get_option( self::ERROR_OPTION, null );
+		if ( ! is_array( $stored ) || ! isset( $stored['message'], $stored['time'] ) ) {
+			return null;
+		}
+		if ( ! is_string( $stored['message'] ) || '' === $stored['message'] ) {
+			return null;
+		}
+		return array(
+			'message' => $stored['message'],
+			'time'    => (int) $stored['time'],
+		);
+	}
+
+	public function record_error( string $message ): void {
+		if ( '' === $message ) {
+			$message = __( 'AI Ready could not save the generated output.', 'ai-ready-wp' );
+		}
+		update_option(
+			self::ERROR_OPTION,
+			array(
+				'message' => $message,
+				'time'    => time(),
+			),
+			false
+		);
+	}
+
+	public function clear_error(): void {
+		delete_option( self::ERROR_OPTION );
+		delete_transient( self::ERROR_TRANSIENT );
 	}
 
 	public function generated_at(): int {
@@ -214,12 +331,14 @@ final class Store {
 		delete_option( self::INDEX_OPTION );
 		delete_option( self::FULL_OPTION );
 		delete_option( self::GENERATED_OPTION );
+		delete_option( self::STAMP_OPTION );
+		delete_option( self::SCHEMA_OPTION );
 		delete_option( self::EPOCH_OPTION );
+		delete_option( self::ERROR_OPTION );
 		delete_transient( self::ERROR_TRANSIENT );
-		delete_metadata( 'post', 0, self::META_MARKDOWN, '', true );
-		delete_metadata( 'post', 0, self::META_STAMP, '', true );
-		delete_metadata( 'post', 0, self::META_NOTE, '', true );
-		delete_metadata( 'post', 0, self::META_CONVERTER, '', true );
+		foreach ( $this->meta_keys() as $key ) {
+			delete_metadata( 'post', 0, $key, '', true );
+		}
 		$this->remove_legacy();
 	}
 
@@ -277,7 +396,7 @@ final class Store {
 			if ( $this->blocked( 'delete' ) ) {
 				return false;
 			}
-			foreach ( array( self::META_MARKDOWN, self::META_STAMP, self::META_NOTE, self::META_CONVERTER ) as $key ) {
+			foreach ( $this->meta_keys() as $key ) {
 				delete_post_meta( $id, $key );
 				if ( metadata_exists( 'post', $id, $key ) ) {
 					return false;
@@ -290,17 +409,127 @@ final class Store {
 	/**
 	 * Older builds wrote a directory outside the web root, or under uploads.
 	 * A path this process cannot see (open_basedir) is not ours to delete.
+	 * A folder that cannot be removed is a warning. The published text is already saved.
 	 */
-	private function remove_legacy(): bool {
-		if ( $this->blocked( 'legacy' ) ) {
-			return false;
-		}
+	private function remove_legacy(): void {
 		foreach ( self::legacy_directories() as $dir ) {
-			if ( ! $this->remove_tree( $dir ) ) {
-				return false;
+			if ( $this->blocked( 'legacy' ) || ! $this->remove_tree( $dir ) ) {
+				$this->warn( 'Could not remove an old generated folder at ' . $dir );
 			}
 		}
+	}
+
+	private function warn( string $message ): void {
+		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- leftover cleanup must not fail the rebuild.
+		error_log( 'AI Ready WP: ' . $message );
+	}
+
+	/**
+	 * @param int[] $ids Ids in display order.
+	 */
+	private function swap( array $ids ): bool {
+		$position = 0;
+		foreach ( $ids as $id ) {
+			$markdown  = get_post_meta( $id, self::META_NEXT_MARKDOWN, true );
+			$stamp     = get_post_meta( $id, self::META_NEXT_STAMP, true );
+			$note      = get_post_meta( $id, self::META_NEXT_NOTE, true );
+			$converter = get_post_meta( $id, self::META_NEXT_CONVERTER, true );
+			if ( ! is_string( $markdown ) || ! metadata_exists( 'post', $id, self::META_NEXT_MARKDOWN ) ) {
+				return false;
+			}
+			if ( ! is_string( $stamp ) || ! is_string( $note ) || ! is_string( $converter ) ) {
+				return false;
+			}
+			$written = $this->write_meta( $id, self::META_MARKDOWN, $markdown )
+				&& $this->write_meta( $id, self::META_STAMP, $stamp )
+				&& $this->write_meta( $id, self::META_NOTE, $note )
+				&& $this->write_meta( $id, self::META_CONVERTER, $converter )
+				&& $this->write_meta( $id, self::META_POSITION, (string) $position );
+			unset( $markdown );
+			if ( ! $written ) {
+				return false;
+			}
+			foreach ( array( self::META_NEXT_MARKDOWN, self::META_NEXT_STAMP, self::META_NEXT_NOTE, self::META_NEXT_CONVERTER, self::META_NEXT_POSITION ) as $key ) {
+				delete_post_meta( $id, $key );
+			}
+			++$position;
+		}
 		return true;
+	}
+
+	/**
+	 * One Markdown column, then drop the query buffer so the next row can reuse it.
+	 */
+	private function markdown_column( int $id ): string {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || $id < 1 ) {
+			$value = get_post_meta( $id, self::META_MARKDOWN, true );
+			return is_string( $value ) ? $value : '';
+		}
+		$value             = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$wpdb->prepare(
+				"SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s LIMIT 1",
+				$id,
+				self::META_MARKDOWN
+			)
+		);
+		$wpdb->last_result = array();
+		if ( function_exists( 'wp_cache_delete' ) ) {
+			wp_cache_delete( $id, 'post_meta' );
+		}
+		return is_string( $value ) ? $value : '';
+	}
+
+	/**
+	 * @return array<int, array{id: int, position: int}>
+	 */
+	private function positions_after( int $after, int $limit ): array {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || $limit < 1 ) {
+			return array();
+		}
+		$rows = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$wpdb->prepare(
+				"SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = %s AND CAST(meta_value AS UNSIGNED) > %d ORDER BY CAST(meta_value AS UNSIGNED) ASC LIMIT %d",
+				self::META_POSITION,
+				$after,
+				$limit
+			)
+		);
+		if ( ! is_array( $rows ) ) {
+			return array();
+		}
+		$batch = array();
+		foreach ( $rows as $row ) {
+			if ( ! is_object( $row ) || ! isset( $row->post_id ) ) {
+				continue;
+			}
+			$batch[] = array(
+				'id'       => (int) $row->post_id,
+				'position' => isset( $row->meta_value ) ? (int) $row->meta_value : 0,
+			);
+		}
+		$wpdb->last_result = array();
+		unset( $rows );
+		return $batch;
+	}
+
+	/**
+	 * @return string[]
+	 */
+	private function meta_keys(): array {
+		return array(
+			self::META_MARKDOWN,
+			self::META_STAMP,
+			self::META_NOTE,
+			self::META_CONVERTER,
+			self::META_POSITION,
+			self::META_NEXT_MARKDOWN,
+			self::META_NEXT_STAMP,
+			self::META_NEXT_NOTE,
+			self::META_NEXT_CONVERTER,
+			self::META_NEXT_POSITION,
+		);
 	}
 
 	private function remove_tree( string $dir ): bool {
