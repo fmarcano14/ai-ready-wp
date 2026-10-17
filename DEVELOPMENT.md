@@ -89,6 +89,7 @@ composer lint
 composer test
 composer check
 WP_PATH=/path/to/wordpress WP_URL=http://127.0.0.1:8088 bin/verify.sh
+WP_PHAR=/path/to/wp-cli.phar WP_PATH=/path/to/wordpress WP_URL=http://127.0.0.1:8088 bin/verify.sh
 ```
 
 `bin/verify.sh` creates four fixture documents, generates the index, and curls `/llms.txt` and the Markdown URLs. It deletes the fixtures at the end. Run it twice. The second run should pass the same way.

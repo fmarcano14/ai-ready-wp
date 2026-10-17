@@ -146,7 +146,7 @@ final class LlmsTxtBuilderTest extends TestCase {
 	}
 
 	/**
-	 * Build an index from plain rows. The rows are test input, not the production shape.
+	 * Build an index from plain rows.
 	 *
 	 * @param string            $name     H1.
 	 * @param string            $summary  Summary.

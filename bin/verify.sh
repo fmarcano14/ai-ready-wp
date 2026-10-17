@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Rerun the public endpoints against a real WordPress site.
 # Usage: WP_PATH=/path/to/wordpress WP_URL=http://127.0.0.1:8088 bin/verify.sh
+# Optional: WP_PHAR=/path/to/wp-cli.phar when the wp command is not on PATH.
 set -euo pipefail
 
 WP_PATH="${WP_PATH:-}"
 WP_URL="${WP_URL:-}"
-WP_CLI="${WP_CLI:-wp}"
+WP_PHAR="${WP_PHAR:-}"
+WP_PHP="${WP_PHP:-php}"
 
 if [[ -z "$WP_PATH" || -z "$WP_URL" ]]; then
 	echo "Set WP_PATH and WP_URL. Example: WP_PATH=/tmp/wordpress WP_URL=http://127.0.0.1:8088 bin/verify.sh" >&2
@@ -15,18 +16,17 @@ fi
 WP_URL="${WP_URL%/}"
 cd "$WP_PATH"
 
-if ! command -v "$WP_CLI" >/dev/null 2>&1; then
-	if [[ -x /tmp/wp-smoke/wp-cli.phar ]]; then
-		WP_CLI="php /tmp/wp-smoke/wp-cli.phar"
-	else
-		echo "wp is not on PATH. Set WP_CLI to a wp-cli phar." >&2
-		exit 2
-	fi
+if [[ -z "$WP_PHAR" ]] && ! command -v wp >/dev/null 2>&1; then
+	echo "wp is not on PATH. Set WP_PHAR to a wp-cli phar." >&2
+	exit 2
 fi
 
 wp() {
-	# shellcheck disable=SC2086
-	$WP_CLI "$@"
+	if [[ -n "$WP_PHAR" ]]; then
+		"$WP_PHP" "$WP_PHAR" "$@"
+	else
+		command wp "$@"
+	fi
 }
 
 slug_for() {

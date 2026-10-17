@@ -418,7 +418,7 @@ final class Store {
 	}
 
 	/**
-	 * Write a file, preferring the WordPress filesystem API.
+	 * Publish a cache file by writing a temporary sibling and renaming it into place.
 	 *
 	 * @since 1.0.0
 	 *
@@ -428,8 +428,7 @@ final class Store {
 	 */
 	private function write( $path, $contents ) {
 		$temporary = $path . '.tmp';
-		// A crashed write leaves only the temporary file. The next run replaces it and renames over the published path.
-		$written = file_put_contents( $temporary, $contents, LOCK_EX ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		$written   = file_put_contents( $temporary, $contents, LOCK_EX ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- The rename below publishes the file.
 		if ( false === $written ) {
 			return;
 		}

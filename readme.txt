@@ -29,7 +29,7 @@ WP-CLI:
 `wp ai-ready generate`
 `wp ai-ready status`
 
-Fernando Marcano — Fer LLC (https://fer.marketing)
+Fernando Marcano, Fer LLC (https://fer.marketing)
 
 == Installation ==
 

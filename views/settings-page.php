@@ -23,7 +23,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 			echo wp_kses(
 				sprintf(
 					/* translators: %s: linked organization name. */
-					__( 'Fernando Marcano — %s', 'ai-ready-wp' ),
+					__( 'Fernando Marcano, %s', 'ai-ready-wp' ),
 					'<a href="' . esc_url( 'https://fer.marketing' ) . '">Fer LLC</a>'
 				),
 				array(
