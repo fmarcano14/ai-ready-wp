@@ -37,3 +37,50 @@ function ai_ready_autoload( $class_name ) {
 }
 
 spl_autoload_register( 'ai_ready_autoload' );
+
+/**
+ * Boot the single-site plugin.
+ */
+function ai_ready_boot() {
+	if ( is_multisite() ) {
+		add_action( 'admin_notices', 'ai_ready_multisite_notice' );
+		return;
+	}
+	( new AiReady\Front() )->register();
+}
+
+/**
+ * Activation flushes rewrite rules once. It does not build the files.
+ */
+function ai_ready_activate() {
+	if ( is_multisite() ) {
+		deactivate_plugins( plugin_basename( AI_READY_FILE ) );
+		wp_die( esc_html__( 'AI Ready WP is a single-site plugin and does not run on multisite.', 'ai-ready-wp' ) );
+	}
+	( new AiReady\Front() )->rewrites();
+	flush_rewrite_rules();
+}
+
+/**
+ * Deactivation drops rewrite rules and leaves generated files for uninstall.
+ */
+function ai_ready_deactivate() {
+	wp_clear_scheduled_hook( 'ai_ready_rebuild' );
+	flush_rewrite_rules();
+}
+
+/**
+ * Admin notice when the plugin is active on a network.
+ */
+function ai_ready_multisite_notice() {
+	if ( ! current_user_can( 'activate_plugins' ) ) {
+		return;
+	}
+	echo '<div class="notice notice-error"><p>';
+	echo esc_html__( 'AI Ready WP is a single-site plugin and does not run on multisite.', 'ai-ready-wp' );
+	echo '</p></div>';
+}
+
+add_action( 'plugins_loaded', 'ai_ready_boot' );
+register_activation_hook( AI_READY_FILE, 'ai_ready_activate' );
+register_deactivation_hook( AI_READY_FILE, 'ai_ready_deactivate' );
