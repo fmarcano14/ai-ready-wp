@@ -2,7 +2,7 @@
 
 AI Ready WP makes a WordPress site readable by AI assistants from inside wp-admin. It publishes a spec-shaped [`/llms.txt`](https://llmstxt.org/) index and a clean Markdown version of every public document. Nothing leaves the site: there is no external API, no account, and no background service beyond WP-Cron.
 
-Fernando Marcano — [Fer LLC](https://fer.marketing)
+Fernando Marcano, [Fer LLC](https://fer.marketing)
 
 ![Settings → AI Ready, with a live llms.txt preview](docs/settings.png)
 

@@ -19,7 +19,9 @@ AI Ready WP is a single-site WordPress plugin with no runtime Composer dependenc
 | `src/MarkdownUrl.php` | Permalink to `.md` or `?format=markdown`. |
 | `src/Content/Renderer.php` | Runs `the_content` in process, then converts. |
 | `src/Content/MarkdownConverter.php` | DOM conversion from rendered HTML to Markdown. |
-| `src/Content/LlmsTxtBuilder.php` | Spec-shaped `/llms.txt`. |
+| `src/Domain/` | `Index`, `Section`, `Link`, `Document`, and the pure `Membership` rules. |
+| `src/Outputs.php` | Rewrite rules and index file names. |
+| `src/Content/LlmsTxtBuilder.php` | Renders an `Index` as `/llms.txt`. |
 | `src/Content/LlmsFullBuilder.php` | Concatenated `/llms-full.txt`. |
 | `src/Catalog.php` | Queries eligible documents and groups sections. |
 | `src/Generator.php` | Builds, sanitizes, and stores the indexes. |
@@ -53,7 +55,7 @@ Activation and a version bump call `flush_rewrite_rules()`. The rules are:
 
 ## Publication
 
-`Publication::is_public_post()` is the gate for Markdown. `is_index_candidate()` is that check plus the per-document discoverability filter, and it is what the index lists. `is_discoverable_post()` also requires discovery to be on, which is what the editor meta box reports. Filters may return false. A true return cannot override a structural rejection.
+`Publication` reads WordPress and passes a fact array to `Membership`. `Membership::keeps()` is the rule for a public document. `is_index_candidate()` adds the per-document discoverability filter, and that is what the index lists. `is_discoverable_post()` also requires discovery to be on, which is what the editor meta box reports. Filters may return false. A true return cannot override a structural rejection. The `ai_ready_wp_sections` filter receives `Section` objects.
 
 Discovery modes:
 
@@ -86,7 +88,10 @@ composer install
 composer lint
 composer test
 composer check
+WP_PATH=/path/to/wordpress WP_URL=http://127.0.0.1:8088 bin/verify.sh
 ```
+
+`bin/verify.sh` creates four fixture documents, generates the index, and curls `/llms.txt` and the Markdown URLs. It deletes the fixtures at the end. Run it twice. The second run should pass the same way.
 
 PHPUnit covers the converter, the llms.txt builder, the URL policy, the sanitizer, robots meta shapes, exclusions, and the settings sanitizer. Those tests do not boot WordPress. `tests/bootstrap.php` defines `ABSPATH` so class files can keep their direct-access guard.
 
