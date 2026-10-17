@@ -8,6 +8,9 @@
 
 namespace Fer\AiReady\Content;
 
+use Fer\AiReady\Domain\Index;
+use Fer\AiReady\Domain\Link;
+use Fer\AiReady\Domain\Section;
 use Fer\AiReady\UrlPolicy;
 
 /**
@@ -26,44 +29,40 @@ final class LlmsTxtBuilder {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string            $name     Site or project name.
-	 * @param string            $summary  Short summary. May be empty or multiline.
-	 * @param string            $intro    Details placed before the first H2. Headings are flattened.
-	 * @param array<int, mixed> $sections Sections with heading, links, and optional.
+	 * @param Index $index Site summary and ordered sections.
 	 * @return string
 	 */
-	public function build( $name, $summary, $intro, array $sections ) {
-		$name = ltrim( MarkdownText::single_line( $name ), "# \t" );
+	public function build( Index $index ) {
+		$name = ltrim( MarkdownText::single_line( $index->name ), "# \t" );
 		if ( '' === $name ) {
 			$name = 'Site';
 		}
 
 		$chunks = array( '# ' . $name );
 
-		$summary = trim( (string) $summary );
+		$summary = trim( $index->summary );
 		if ( '' !== $summary ) {
 			$chunks[] = $this->blockquote( $summary );
 		}
 
-		$intro = $this->plain_intro( $intro );
+		$intro = $this->plain_intro( $index->details );
 		if ( '' !== $intro ) {
 			$chunks[] = $intro;
 		}
 
 		$optional = array();
-		foreach ( $sections as $section ) {
-			if ( ! is_array( $section ) ) {
+		foreach ( $index->sections as $section ) {
+			if ( ! $section instanceof Section ) {
 				continue;
 			}
-			$links = isset( $section['links'] ) && is_array( $section['links'] ) ? $section['links'] : array();
-			if ( ! empty( $section['optional'] ) ) {
-				foreach ( $links as $link ) {
+			if ( $section->optional ) {
+				foreach ( $section->links as $link ) {
 					$optional[] = $link;
 				}
 				continue;
 			}
-			$heading = isset( $section['heading'] ) ? MarkdownText::single_line( $section['heading'] ) : '';
-			$block   = $this->section( $heading, $links );
+			$heading = MarkdownText::single_line( $section->heading );
+			$block   = $this->section( $heading, $section->links );
 			if ( '' !== $block ) {
 				$chunks[] = $block;
 			}
@@ -125,15 +124,15 @@ final class LlmsTxtBuilder {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string            $heading Section heading.
-	 * @param array<int, mixed> $links   Link rows.
+	 * @param string $heading Section heading.
+	 * @param Link[] $links   Links.
 	 * @return string
 	 */
 	private function section( $heading, array $links ) {
 		$heading = trim( (string) $heading );
 		$lines   = array();
 		foreach ( $links as $link ) {
-			if ( ! is_array( $link ) ) {
+			if ( ! $link instanceof Link ) {
 				continue;
 			}
 			$line = $this->link_line( $link );
@@ -152,21 +151,21 @@ final class LlmsTxtBuilder {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param array<string, mixed> $link Link with name, url, and note.
+	 * @param Link $link Link.
 	 * @return string
 	 */
-	private function link_line( array $link ) {
-		$url = isset( $link['url'] ) ? trim( (string) $link['url'] ) : '';
+	private function link_line( Link $link ) {
+		$url = trim( $link->url );
 		if ( ! UrlPolicy::allows( $url, false ) ) {
 			return '';
 		}
 		$url  = str_replace( array( ' ', ')' ), array( '%20', '%29' ), $url );
-		$name = isset( $link['name'] ) ? MarkdownText::escape_link_label( $link['name'] ) : '';
+		$name = MarkdownText::escape_link_label( $link->name );
 		if ( '' === $name ) {
 			$name = $url;
 		}
 		$line = '- [' . $name . '](' . $url . ')';
-		$note = isset( $link['note'] ) ? MarkdownText::single_line( $link['note'] ) : '';
+		$note = MarkdownText::single_line( $link->note );
 		$note = ltrim( $note, ": \t" );
 		if ( strlen( $note ) > 240 ) {
 			$note = rtrim( substr( $note, 0, 240 ) );

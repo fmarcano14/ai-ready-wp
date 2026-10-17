@@ -11,6 +11,8 @@ namespace Fer\AiReady;
 use Fer\AiReady\Cache\Store;
 use Fer\AiReady\Content\LlmsFullBuilder;
 use Fer\AiReady\Content\LlmsTxtBuilder;
+use Fer\AiReady\Domain\Index;
+use Fer\AiReady\Domain\Section;
 
 /**
  * Generates, sanitizes, and stores the index files.
@@ -142,7 +144,8 @@ final class Generator {
 		$name      = $this->site_name();
 		$summary   = $this->summary( $settings, $name );
 		$intro     = $this->intro( $settings );
-		$llms      = ( new LlmsTxtBuilder() )->build( $name, $summary, $intro, $collected['sections'] );
+		$index     = new Index( $name, $summary, $intro, $this->sections_from( $collected['sections'] ) );
+		$llms      = ( new LlmsTxtBuilder() )->build( $index );
 		$filtered  = apply_filters( 'ai_ready_wp_llms_txt', $llms, $collected, $settings );
 		if ( is_string( $filtered ) ) {
 			$llms = $filtered;
@@ -155,7 +158,7 @@ final class Generator {
 			if ( '' === trim( $full_intro ) ) {
 				$full_intro = __( 'This file concatenates the Markdown version of each public document listed in llms.txt.', 'ai-ready-wp' );
 			}
-			$full     = ( new LlmsFullBuilder() )->build( $name, $summary, $full_intro, $collected['documents'] );
+			$full     = ( new LlmsFullBuilder() )->build( new Index( $name, $summary, $full_intro, array() ), $collected['documents'] );
 			$filtered = apply_filters( 'ai_ready_wp_llms_full', $full, $collected, $settings );
 			if ( is_string( $filtered ) ) {
 				$full = $filtered;
@@ -180,6 +183,27 @@ final class Generator {
 				'total'   => $total,
 			),
 		);
+	}
+
+	/**
+	 * Keep only section objects after the sections filter.
+	 *
+	 * @since 1.0.0
+	 *
+	 * @param mixed $sections Filter result.
+	 * @return Section[]
+	 */
+	private function sections_from( $sections ) {
+		if ( ! is_array( $sections ) ) {
+			return array();
+		}
+		$out = array();
+		foreach ( $sections as $section ) {
+			if ( $section instanceof Section ) {
+				$out[] = $section;
+			}
+		}
+		return $out;
 	}
 
 	/**

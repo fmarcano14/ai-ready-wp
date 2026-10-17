@@ -9,6 +9,7 @@
 namespace Fer\AiReady\Cache;
 
 use Fer\AiReady\Content\Renderer;
+use Fer\AiReady\Outputs;
 use Fer\AiReady\Sanitizer;
 use Fer\AiReady\Settings;
 
@@ -406,7 +407,7 @@ final class Store {
 	 * @return string
 	 */
 	private function path( $name ) {
-		if ( ! in_array( $name, array( 'llms.txt', 'llms-full.txt' ), true ) ) {
+		if ( ! in_array( $name, Outputs::index_names(), true ) ) {
 			return '';
 		}
 		$dir = $this->directory();
@@ -426,15 +427,15 @@ final class Store {
 	 * @return void
 	 */
 	private function write( $path, $contents ) {
-		if ( function_exists( 'WP_Filesystem' ) ) {
-			require_once ABSPATH . 'wp-admin/includes/file.php';
-			global $wp_filesystem;
-			if ( WP_Filesystem() && $wp_filesystem ) {
-				$wp_filesystem->put_contents( $path, $contents, FS_CHMOD_FILE );
-				return;
-			}
+		$temporary = $path . '.tmp';
+		// A crashed write leaves only the temporary file. The next run replaces it and renames over the published path.
+		$written = file_put_contents( $temporary, $contents, LOCK_EX ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		if ( false === $written ) {
+			return;
 		}
-		// Direct write is the fallback when the filesystem API cannot start without credentials.
-		file_put_contents( $path, $contents, LOCK_EX ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- Rename publishes the file in one step so readers never see a partial body.
+		if ( ! rename( $temporary, $path ) ) {
+			wp_delete_file( $temporary );
+		}
 	}
 }

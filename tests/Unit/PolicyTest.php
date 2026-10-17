@@ -8,6 +8,7 @@
 namespace Fer\AiReady\Tests\Unit;
 
 use Fer\AiReady\Content\MarkdownDocument;
+use Fer\AiReady\Domain\Document;
 use Fer\AiReady\Content\MarkdownText;
 use Fer\AiReady\Exclusions;
 use Fer\AiReady\MarkdownUrl;
@@ -153,7 +154,7 @@ final class PolicyTest extends TestCase {
 	 * @return void
 	 */
 	public function test_markdown_document_front_matter() {
-		$md = ( new MarkdownDocument() )->compose( 'Say "hi"', 'https://example.com/hi', '2026-01-01', '2026-01-02', 'page', 'Body' );
+		$md = ( new MarkdownDocument() )->compose( new Document( 'Say "hi"', 'https://example.com/hi', '2026-01-01', '2026-01-02', 'page', 'Body' ) );
 		$this->assertStringContainsString( 'title: "Say \\"hi\\""', $md );
 		$this->assertStringContainsString( "# Say \"hi\"\n", $md );
 		$this->assertStringContainsString( "Body\n", $md );

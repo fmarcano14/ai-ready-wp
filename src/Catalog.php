@@ -10,6 +10,9 @@ namespace Fer\AiReady;
 
 use Fer\AiReady\Content\MarkdownText;
 use Fer\AiReady\Content\Renderer;
+use Fer\AiReady\Domain\Document;
+use Fer\AiReady\Domain\Link;
+use Fer\AiReady\Domain\Section;
 
 /**
  * Queries selected post types and builds link sections.
@@ -83,9 +86,16 @@ final class Catalog {
 				}
 				$links[] = $this->link_for( $post, $settings );
 				if ( $full_left > 0 ) {
-					$documents[] = array(
-						'markdown' => $this->renderer->render_post( $post ),
+					$document           = new Document(
+						get_the_title( $post ),
+						(string) get_permalink( $post ),
+						(string) get_post_time( 'c', true, $post ),
+						(string) get_post_modified_time( 'c', true, $post ),
+						$post->post_type,
+						''
 					);
+					$document->markdown = $this->renderer->render_post( $post );
+					$documents[]        = $document;
 					--$full_left;
 				}
 				--$remaining;
@@ -94,11 +104,10 @@ final class Catalog {
 				}
 			}
 			$counts[ $slug ] = count( $links );
-			$sections[]      = array(
-				'heading'  => $this->heading( $slug, $settings ),
-				'optional' => in_array( $slug, $settings['optional_post_types'], true ),
-				'links'    => $links,
-				'type'     => $slug,
+			$sections[]      = new Section(
+				$this->heading( $slug, $settings ),
+				$links,
+				in_array( $slug, $settings['optional_post_types'], true )
 			);
 		}
 
@@ -184,7 +193,7 @@ final class Catalog {
 	 *
 	 * @param \WP_Post             $post     Post object.
 	 * @param array<string, mixed> $settings Settings.
-	 * @return array{name: string, url: string, note: string}
+	 * @return Link
 	 */
 	private function link_for( \WP_Post $post, array $settings ) {
 		$permalink = (string) get_permalink( $post );
@@ -211,11 +220,7 @@ final class Catalog {
 				(int) $post->ID
 			);
 		}
-		return array(
-			'name' => $title,
-			'url'  => $url,
-			'note' => $note,
-		);
+		return new Link( $title, $url, $note );
 	}
 
 	/**

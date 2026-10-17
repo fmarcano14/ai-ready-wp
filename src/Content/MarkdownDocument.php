@@ -8,6 +8,8 @@
 
 namespace Fer\AiReady\Content;
 
+use Fer\AiReady\Domain\Document;
+
 /**
  * Adds a YAML-style header and a title to converted body text.
  *
@@ -19,31 +21,26 @@ final class MarkdownDocument {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string $title    Document title.
-	 * @param string $url      Canonical HTML URL.
-	 * @param string $date     Published date.
-	 * @param string $modified Modified date.
-	 * @param string $type     Post type slug.
-	 * @param string $body     Converted Markdown body.
+	 * @param Document $document Document fields. The body is the converted Markdown.
 	 * @return string
 	 */
-	public function compose( $title, $url, $date, $modified, $type, $body ) {
-		$title = MarkdownText::single_line( $title );
+	public function compose( Document $document ) {
+		$title = MarkdownText::single_line( $document->title );
 		if ( '' === $title ) {
 			$title = 'Untitled';
 		}
 
 		$lines   = array( '---' );
 		$lines[] = 'title: ' . $this->yaml_quote( $title );
-		$lines[] = 'url: ' . $this->yaml_quote( $url );
-		$lines[] = 'date: ' . $this->yaml_quote( $date );
-		$lines[] = 'modified: ' . $this->yaml_quote( $modified );
-		$lines[] = 'type: ' . $this->yaml_quote( $type );
+		$lines[] = 'url: ' . $this->yaml_quote( $document->url );
+		$lines[] = 'date: ' . $this->yaml_quote( $document->date );
+		$lines[] = 'modified: ' . $this->yaml_quote( $document->modified );
+		$lines[] = 'type: ' . $this->yaml_quote( $document->type );
 		$lines[] = '---';
 		$lines[] = '';
 		$lines[] = '# ' . $title;
 		$lines[] = '';
-		$lines[] = trim( (string) $body );
+		$lines[] = trim( $document->body );
 
 		return rtrim( implode( "\n", $lines ) ) . "\n";
 	}

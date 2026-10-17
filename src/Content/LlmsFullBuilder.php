@@ -8,6 +8,9 @@
 
 namespace Fer\AiReady\Content;
 
+use Fer\AiReady\Domain\Document;
+use Fer\AiReady\Domain\Index;
+
 /**
  * Concatenates per-document Markdown behind an llms.txt-style header.
  *
@@ -19,21 +22,19 @@ final class LlmsFullBuilder {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string            $name      Site name.
-	 * @param string            $summary   Summary.
-	 * @param string            $intro     Intro placed before the documents.
-	 * @param array<int, mixed> $documents Rows with a markdown key.
+	 * @param Index      $index     Header fields. Sections are ignored.
+	 * @param Document[] $documents Finished documents.
 	 * @return string
 	 */
-	public function build( $name, $summary, $intro, array $documents ) {
-		$header = ( new LlmsTxtBuilder() )->build( $name, $summary, $intro, array() );
+	public function build( Index $index, array $documents ) {
+		$header = ( new LlmsTxtBuilder() )->build( new Index( $index->name, $index->summary, $index->details, array() ) );
 		$parts  = array( rtrim( $header ) );
 
 		foreach ( $documents as $document ) {
-			if ( ! is_array( $document ) || empty( $document['markdown'] ) || ! is_string( $document['markdown'] ) ) {
+			if ( ! $document instanceof Document ) {
 				continue;
 			}
-			$body = trim( $document['markdown'] );
+			$body = trim( $document->markdown );
 			if ( '' === $body ) {
 				continue;
 			}

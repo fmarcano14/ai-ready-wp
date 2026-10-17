@@ -11,6 +11,7 @@ namespace Fer\AiReady\Http;
 use Fer\AiReady\Cache\Store;
 use Fer\AiReady\Content\Renderer;
 use Fer\AiReady\Generator;
+use Fer\AiReady\Outputs;
 use Fer\AiReady\Publication;
 use Fer\AiReady\Settings;
 
@@ -97,9 +98,9 @@ final class Router {
 	 * @return void
 	 */
 	public function register_rewrites() {
-		add_rewrite_rule( '^llms\.txt$', 'index.php?ai_ready_wp_file=llms.txt', 'top' );
-		add_rewrite_rule( '^llms-full\.txt$', 'index.php?ai_ready_wp_file=llms-full.txt', 'top' );
-		add_rewrite_rule( '^(.+?)\.md$', 'index.php?ai_ready_wp_markdown=1&ai_ready_wp_path=$matches[1]', 'top' );
+		foreach ( Outputs::rewrite_rules() as $regex => $query ) {
+			add_rewrite_rule( $regex, $query, 'top' );
+		}
 	}
 
 	/**
@@ -131,12 +132,8 @@ final class Router {
 		}
 		$path = isset( $wp->request ) ? (string) $wp->request : '';
 		$path = trim( $path, '/' );
-		if ( 'llms.txt' === $path ) {
-			$wp->query_vars['ai_ready_wp_file'] = 'llms.txt';
-			return;
-		}
-		if ( 'llms-full.txt' === $path ) {
-			$wp->query_vars['ai_ready_wp_file'] = 'llms-full.txt';
+		if ( in_array( $path, Outputs::index_names(), true ) ) {
+			$wp->query_vars['ai_ready_wp_file'] = $path;
 			return;
 		}
 		if ( strlen( $path ) > 3 && '.md' === substr( $path, -3 ) ) {
@@ -185,11 +182,7 @@ final class Router {
 	 * @return array<string, string>
 	 */
 	public static function strip_rules( $rules ) {
-		$owned = array(
-			'^llms\.txt$',
-			'^llms-full\.txt$',
-			'^(.+?)\.md$',
-		);
+		$owned = array_keys( Outputs::rewrite_rules() );
 		foreach ( array_keys( $rules ) as $regex ) {
 			if ( in_array( $regex, $owned, true ) ) {
 				unset( $rules[ $regex ] );
@@ -207,11 +200,8 @@ final class Router {
 	 */
 	public function serve() {
 		$file = (string) get_query_var( 'ai_ready_wp_file' );
-		if ( 'llms.txt' === $file ) {
-			$this->serve_index( false );
-		}
-		if ( 'llms-full.txt' === $file ) {
-			$this->serve_index( true );
+		if ( in_array( $file, Outputs::index_names(), true ) ) {
+			$this->serve_index( Outputs::is_full( $file ) );
 		}
 		if ( '1' === (string) get_query_var( 'ai_ready_wp_markdown' ) ) {
 			$this->serve_markdown_path( (string) get_query_var( 'ai_ready_wp_path' ) );
@@ -266,7 +256,8 @@ final class Router {
 			$this->emit_error( 404, __( 'LLM discovery is disabled.', 'ai-ready-wp' ) );
 		}
 		$settings = $this->settings->all();
-		if ( $full && empty( $settings['enable_llms_full'] ) ) {
+		$setting  = Outputs::required_setting( $full ? 'llms-full.txt' : 'llms.txt' );
+		if ( '' !== $setting && empty( $settings[ $setting ] ) ) {
 			$this->emit_error( 404, __( 'llms-full.txt is disabled.', 'ai-ready-wp' ) );
 		}
 

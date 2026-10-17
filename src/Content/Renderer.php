@@ -8,6 +8,7 @@
 
 namespace Fer\AiReady\Content;
 
+use Fer\AiReady\Domain\Document;
 use Fer\AiReady\Sanitizer;
 
 /**
@@ -77,12 +78,14 @@ final class Renderer {
 		}
 		$body     = $this->converter->convert( $html );
 		$markdown = $this->document->compose(
-			get_the_title( $post ),
-			(string) get_permalink( $post ),
-			(string) get_post_time( 'c', true, $post ),
-			(string) get_post_modified_time( 'c', true, $post ),
-			$post->post_type,
-			$body
+			new Document(
+				get_the_title( $post ),
+				(string) get_permalink( $post ),
+				(string) get_post_time( 'c', true, $post ),
+				(string) get_post_modified_time( 'c', true, $post ),
+				$post->post_type,
+				$body
+			)
 		);
 		$markdown = $this->sanitizer->clean_markdown( $markdown, Sanitizer::MAX_DOCUMENT_BYTES );
 		$filtered = apply_filters( 'ai_ready_wp_markdown', $markdown, $post );

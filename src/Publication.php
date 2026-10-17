@@ -8,6 +8,8 @@
 
 namespace Fer\AiReady;
 
+use Fer\AiReady\Domain\Membership;
+
 /**
  * Eligibility policy for Markdown documents and llms.txt.
  *
@@ -69,7 +71,7 @@ final class Publication {
 	 * @return bool
 	 */
 	public function is_public_post( \WP_Post $post ) {
-		$allowed  = $this->is_structurally_eligible( $post ) && ! $this->is_excluded( $post ) && ! $this->is_noindex( $post );
+		$allowed  = Membership::keeps( $this->facts( $post ) );
 		$filtered = apply_filters( 'ai_ready_wp_post_is_public', $allowed, $post );
 		return $allowed && (bool) $filtered;
 	}
@@ -129,23 +131,38 @@ final class Publication {
 	 * @return bool
 	 */
 	public function is_structurally_eligible( \WP_Post $post ) {
-		if ( 'publish' !== $post->post_status || '' !== $post->post_password ) {
-			return false;
-		}
+		return Membership::structural( $this->facts( $post ) );
+	}
+
+	/**
+	 * Facts the pure membership rules read.
+	 *
+	 * @since 1.0.0
+	 *
+	 * @param \WP_Post $post Post object.
+	 * @return array<string, mixed>
+	 */
+	private function facts( \WP_Post $post ) {
 		$settings = $this->settings->all();
 		$types    = isset( $settings['post_types'] ) && is_array( $settings['post_types'] ) ? $settings['post_types'] : array();
-		if ( ! in_array( $post->post_type, $types, true ) || ! isset( PostTypes::selectable()[ $post->post_type ] ) ) {
-			return false;
-		}
+		$selected = in_array( $post->post_type, $types, true ) && isset( PostTypes::selectable()[ $post->post_type ] );
+		$reserved = false;
 		if ( 'page' === $post->post_type && (int) get_option( 'page_for_posts' ) === (int) $post->ID ) {
-			return false;
+			$reserved = true;
 		}
 		foreach ( array( 'woocommerce_cart_page_id', 'woocommerce_checkout_page_id', 'woocommerce_myaccount_page_id' ) as $option ) {
 			if ( (int) get_option( $option ) === (int) $post->ID ) {
-				return false;
+				$reserved = true;
 			}
 		}
-		return true;
+		return array(
+			'status'   => (string) $post->post_status,
+			'password' => '' !== (string) $post->post_password,
+			'selected' => $selected,
+			'reserved' => $reserved,
+			'excluded' => $this->is_excluded( $post ),
+			'noindex'  => $this->is_noindex( $post ),
+		);
 	}
 
 	/**

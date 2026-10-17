@@ -9,6 +9,10 @@ namespace Fer\AiReady\Tests\Unit;
 
 use Fer\AiReady\Content\LlmsFullBuilder;
 use Fer\AiReady\Content\LlmsTxtBuilder;
+use Fer\AiReady\Domain\Document;
+use Fer\AiReady\Domain\Index;
+use Fer\AiReady\Domain\Link;
+use Fer\AiReady\Domain\Section;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -24,32 +28,34 @@ final class LlmsTxtBuilderTest extends TestCase {
 	public function test_builds_the_spec_shape() {
 		$builder = new LlmsTxtBuilder();
 		$md      = $builder->build(
-			'Title',
-			'Optional description goes here',
-			'Optional details go here',
-			array(
+			$this->index(
+				'Title',
+				'Optional description goes here',
+				'Optional details go here',
 				array(
-					'heading'  => 'Section name',
-					'optional' => false,
-					'links'    => array(
-						array(
-							'name' => 'Link title',
-							'url'  => 'https://example.com/docs',
-							'note' => 'Optional link details',
+					array(
+						'heading'  => 'Section name',
+						'optional' => false,
+						'links'    => array(
+							array(
+								'name' => 'Link title',
+								'url'  => 'https://example.com/docs',
+								'note' => 'Optional link details',
+							),
 						),
 					),
-				),
-				array(
-					'heading'  => 'Skipped heading',
-					'optional' => true,
-					'links'    => array(
-						array(
-							'name' => 'Other',
-							'url'  => 'https://example.com/other',
-							'note' => '',
+					array(
+						'heading'  => 'Skipped heading',
+						'optional' => true,
+						'links'    => array(
+							array(
+								'name' => 'Other',
+								'url'  => 'https://example.com/other',
+								'note' => '',
+							),
 						),
 					),
-				),
+				)
 			)
 		);
 
@@ -64,14 +70,16 @@ final class LlmsTxtBuilderTest extends TestCase {
 	 */
 	public function test_blockquote_and_empty_sections() {
 		$md = ( new LlmsTxtBuilder() )->build(
-			' # Site ',
-			"Line one\nLine two",
-			"## Not a section\nStill details",
-			array(
+			$this->index(
+				' # Site ',
+				"Line one\nLine two",
+				"## Not a section\nStill details",
 				array(
-					'heading' => 'Empty',
-					'links'   => array(),
-				),
+					array(
+						'heading' => 'Empty',
+						'links'   => array(),
+					),
+				)
 			)
 		);
 
@@ -89,25 +97,27 @@ final class LlmsTxtBuilderTest extends TestCase {
 	 */
 	public function test_escapes_labels_and_drops_unsafe_urls() {
 		$md = ( new LlmsTxtBuilder() )->build(
-			'Site',
-			'',
-			'',
-			array(
+			$this->index(
+				'Site',
+				'',
+				'',
 				array(
-					'heading' => 'Docs',
-					'links'   => array(
-						array(
-							'name' => 'A [b]',
-							'url'  => 'https://example.com/a)',
-							'note' => "first\nsecond",
-						),
-						array(
-							'name' => 'Bad',
-							'url'  => 'javascript:alert(1)',
-							'note' => 'nope',
+					array(
+						'heading' => 'Docs',
+						'links'   => array(
+							array(
+								'name' => 'A [b]',
+								'url'  => 'https://example.com/a)',
+								'note' => "first\nsecond",
+							),
+							array(
+								'name' => 'Bad',
+								'url'  => 'javascript:alert(1)',
+								'note' => 'nope',
+							),
 						),
 					),
-				),
+				)
 			)
 		);
 
@@ -121,18 +131,47 @@ final class LlmsTxtBuilderTest extends TestCase {
 	 * @return void
 	 */
 	public function test_full_file_concatenates_documents() {
-		$md = ( new LlmsFullBuilder() )->build(
-			'Site',
-			'Summary',
-			'Intro',
-			array(
-				array( 'markdown' => "# One\n\nBody" ),
-				array( 'markdown' => '' ),
-			)
+		$one             = new Document( 'One', 'https://example.com/one', '2026-01-01', '2026-01-01', 'page', 'Body' );
+		$one->markdown   = "# One\n\nBody";
+		$empty           = new Document( 'Empty', 'https://example.com/empty', '2026-01-01', '2026-01-01', 'page', '' );
+		$empty->markdown = '';
+		$md              = ( new LlmsFullBuilder() )->build(
+			new Index( 'Site', 'Summary', 'Intro', array() ),
+			array( $one, $empty )
 		);
 
 		$this->assertStringContainsString( "# Site\n", $md );
 		$this->assertStringContainsString( '> Summary', $md );
 		$this->assertStringContainsString( "---\n\n# One\n\nBody\n", $md );
+	}
+
+	/**
+	 * Build an index from plain rows. The rows are test input, not the production shape.
+	 *
+	 * @param string            $name     H1.
+	 * @param string            $summary  Summary.
+	 * @param string            $details  Details.
+	 * @param array<int, mixed> $sections Section rows.
+	 * @return Index
+	 */
+	private function index( $name, $summary, $details, array $sections ) {
+		$built = array();
+		foreach ( $sections as $section ) {
+			$links = array();
+			$rows  = isset( $section['links'] ) && is_array( $section['links'] ) ? $section['links'] : array();
+			foreach ( $rows as $row ) {
+				$links[] = new Link(
+					isset( $row['name'] ) ? $row['name'] : '',
+					isset( $row['url'] ) ? $row['url'] : '',
+					isset( $row['note'] ) ? $row['note'] : ''
+				);
+			}
+			$built[] = new Section(
+				isset( $section['heading'] ) ? $section['heading'] : '',
+				$links,
+				! empty( $section['optional'] )
+			);
+		}
+		return new Index( $name, $summary, $details, $built );
 	}
 }
