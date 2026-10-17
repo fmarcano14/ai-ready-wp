@@ -1,0 +1,49 @@
+{
+  "name": "ferllc/ai-ready-wp",
+  "description": "Make a WordPress site AI-ready with /llms.txt and Markdown versions of public content.",
+  "type": "wordpress-plugin",
+  "license": "GPL-2.0-or-later",
+  "authors": [
+    {
+      "name": "Fernando Marcano",
+      "homepage": "https://fer.marketing"
+    }
+  ],
+  "require": {
+    "php": ">=7.4"
+  },
+  "require-dev": {
+    "dealerdirect/phpcodesniffer-composer-installer": "^1.0",
+    "phpcompatibility/phpcompatibility-wp": "^2.1",
+    "phpunit/phpunit": "^9.6",
+    "wp-coding-standards/wpcs": "^3.1"
+  },
+  "autoload": {
+    "psr-4": {
+      "Fer\\AiReady\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Fer\\AiReady\\Tests\\": "tests/"
+    }
+  },
+  "config": {
+    "allow-plugins": {
+      "dealerdirect/phpcodesniffer-composer-installer": true
+    },
+    "platform": {
+      "php": "7.4.33"
+    },
+    "sort-packages": true
+  },
+  "scripts": {
+    "test": "phpunit --colors=always",
+    "lint": "phpcs",
+    "lint:fix": "phpcbf",
+    "check": [
+      "@lint",
+      "@test"
+    ]
+  }
+}

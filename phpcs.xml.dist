@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<ruleset name="AI Ready WP">
+	<description>WordPress Coding Standards for AI Ready WP. Class files use PSR-4 names.</description>
+
+	<file>ai-ready-wp.php</file>
+	<file>uninstall.php</file>
+	<file>src</file>
+	<file>views</file>
+	<file>tests</file>
+
+	<exclude-pattern>*/vendor/*</exclude-pattern>
+	<exclude-pattern>*/node_modules/*</exclude-pattern>
+	<exclude-pattern>*/languages/*</exclude-pattern>
+
+	<arg value="sp"/>
+	<arg name="basepath" value="."/>
+	<arg name="colors"/>
+	<arg name="extensions" value="php"/>
+	<arg name="parallel" value="8"/>
+
+	<config name="minimum_supported_wp_version" value="6.2"/>
+	<config name="testVersion" value="7.4-"/>
+	<config name="text_domain" value="ai-ready-wp"/>
+
+	<rule ref="WordPress">
+		<!-- PSR-4 requires StudlyCase filenames; WPCS expects class-*.php. -->
+		<exclude name="WordPress.Files.FileName"/>
+	</rule>
+
+	<rule ref="PHPCompatibilityWP"/>
+
+	<rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+		<exclude-pattern>*/tests/*</exclude-pattern>
+		<properties>
+			<property name="prefixes" type="array">
+				<element value="ai_ready_wp"/>
+				<element value="AI_READY_WP"/>
+				<element value="Fer\AiReady"/>
+			</property>
+		</properties>
+	</rule>
+
+	<!-- View templates are included from a method. Their variables are local. -->
+	<rule ref="WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound">
+		<exclude-pattern>*/views/*</exclude-pattern>
+	</rule>
+
+	<!-- DOMDocument exposes camelCase properties. -->
+	<rule ref="WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase">
+		<exclude-pattern>*/MarkdownConverter.php</exclude-pattern>
+	</rule>
+
+	<rule ref="Generic.Commenting.DocComment">
+		<exclude-pattern>*/tests/*</exclude-pattern>
+	</rule>
+</ruleset>

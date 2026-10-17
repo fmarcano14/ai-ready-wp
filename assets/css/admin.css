@@ -1,0 +1,123 @@
+.ai-ready-wp__header {
+  align-items: end;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+  margin: 12px 0 16px;
+}
+
+.ai-ready-wp__header h1 {
+  margin-bottom: 4px;
+}
+
+.ai-ready-wp__lede,
+.ai-ready-wp__credit {
+  color: #50575e;
+  margin: 0;
+}
+
+.ai-ready-wp__status {
+  background: #fff;
+  border: 1px solid #dcdcde;
+  border-left: 4px solid #1d4e89;
+  margin: 0 0 16px;
+  padding: 12px 16px;
+}
+
+.ai-ready-wp__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+
+.ai-ready-wp__chips li {
+  background: #f0f6fc;
+  border-radius: 999px;
+  color: #1d4e89;
+  font-weight: 600;
+  padding: 2px 10px;
+}
+
+.ai-ready-wp__links {
+  display: flex;
+  gap: 16px;
+}
+
+.ai-ready-wp__generate {
+  margin: 8px 0 0;
+}
+
+.ai-ready-wp__layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1.3fr) minmax(280px, 0.7fr);
+}
+
+.ai-ready-wp__card {
+  background: #fff;
+  border: 1px solid #dcdcde;
+  margin: 0 0 16px;
+  padding: 12px 16px 4px;
+}
+
+.ai-ready-wp__card legend,
+.ai-ready-wp__card summary {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ai-ready-wp__preview {
+  position: sticky;
+  top: 46px;
+}
+
+.ai-ready-wp__preview-bar {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.ai-ready-wp__preview-bar h2 {
+  margin: 0;
+}
+
+.ai-ready-wp__preview-status {
+  color: #50575e;
+  min-height: 1.2em;
+}
+
+.ai-ready-wp__preview-body {
+  background: #f7f4ee;
+  border: 1px solid #e2d9cc;
+  color: #1d2327;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  max-height: 70vh;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
+.ai-ready-wp table input.regular-text {
+  width: 100%;
+}
+
+.ai-ready-wp table input[type="number"] {
+  width: 80px;
+}
+
+@media (max-width: 960px) {
+  .ai-ready-wp__header,
+  .ai-ready-wp__layout {
+    display: block;
+  }
+
+  .ai-ready-wp__preview {
+    position: static;
+  }
+}
