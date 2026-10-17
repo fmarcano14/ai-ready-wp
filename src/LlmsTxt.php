@@ -46,10 +46,12 @@ final class LlmsTxt {
 			$lines[] = '';
 		}
 
-		$lines[] = '## Optional';
-		$lines[] = '';
-		foreach ( $optional as $document ) {
-			$lines[] = $this->link_line( $document );
+		if ( array() !== $optional ) {
+			$lines[] = '## Optional';
+			$lines[] = '';
+			foreach ( $optional as $document ) {
+				$lines[] = $this->link_line( $document );
+			}
 		}
 
 		return rtrim( implode( "\n", $lines ) ) . "\n";

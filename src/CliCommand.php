@@ -30,9 +30,19 @@ final class CliCommand {
 		unset( $args, $assoc );
 		$count = Generator::trusted(
 			static function () {
-				return ( new Generator() )->run();
+				return ( new Generator() )->run( true );
 			}
 		);
+		if ( is_wp_error( $count ) ) {
+			$message = $count->get_error_message();
+			if ( ! is_string( $message ) || '' === $message ) {
+				$message = 'AI Ready could not save the generated output.';
+			}
+			if ( defined( 'AI_READY_TESTING' ) && AI_READY_TESTING ) {
+				throw new \RuntimeException( $message ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- test signal, not rendered output.
+			}
+			\WP_CLI::error( $message );
+		}
 		\WP_CLI::success( sprintf( 'Wrote %d document(s).', (int) $count ) );
 	}
 
@@ -48,7 +58,7 @@ final class CliCommand {
 	 */
 	public function status( $args, $assoc ): void {
 		unset( $args, $assoc );
-		$store = Store::from_uploads();
+		$store = Store::open();
 		$when  = $store->generated_at();
 		\WP_CLI::log( 'Single-site plugin.' );
 		\WP_CLI::log( 'llms.txt: ' . ( $store->has_index() ? 'yes' : 'no' ) );

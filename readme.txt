@@ -20,7 +20,7 @@ AI Ready WP writes three kinds of files on your server:
 
 The Markdown response uses `text/markdown; charset=utf-8`, `X-Robots-Tag: noindex`, and a canonical link back to the HTML page. The HTML head links to that Markdown URL.
 
-This is a single-site plugin. It does not run on multisite, and it does not call an external service.
+This is a single-site plugin. It does not run on multisite, and it does not call an external service. It needs the PHP mbstring extension. If mbstring is missing, WordPress shows an admin notice and the plugin does not load.
 
 Drafts, private posts, scheduled posts, and password-protected posts are left out. Each document has an "Exclude from AI files" checkbox. Common SEO noindex flags are honored.
 
@@ -38,7 +38,7 @@ No. AI Ready WP is a single-site plugin. Activating it on a network stops and sh
 
 = Does it send content anywhere? =
 
-No. The files are written under the uploads directory on this server.
+No. The generated text is stored in the database on this server and served only through the plugin.
 
 = When do the files refresh? =
 

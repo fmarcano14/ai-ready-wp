@@ -181,7 +181,7 @@ final class Settings {
 			$lines[] = trim( $line );
 		}
 		$text = trim( implode( "\n", $lines ) );
-		if ( mb_strlen( $text, 'UTF-8' ) > 2000 ) {
+		if ( extension_loaded( 'mbstring' ) && mb_strlen( $text, 'UTF-8' ) > 2000 ) {
 			$text = Text::boundary( $text, 2000 );
 		}
 		return $text;

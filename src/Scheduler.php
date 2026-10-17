@@ -12,13 +12,20 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * Ordinary edits share one delayed rebuild. Leaving the public set rewrites immediately.
+ * Ordinary edits share one delayed cron event. A batch of hides shares one rebuild.
  */
 final class Scheduler {
 
 	public const HOOK = 'ai_ready_rebuild';
 
 	public const DELAY = 30;
+
+	/**
+	 * One rebuild is already queued for this request.
+	 *
+	 * @var bool
+	 */
+	private static bool $pending = false;
 
 	/**
 	 * Stops a rewrite from starting another rewrite.
@@ -29,6 +36,7 @@ final class Scheduler {
 
 	public function register(): void {
 		add_action( 'save_post', array( $this, 'queue' ), 20, 2 );
+		add_action( 'save_post_wp_block', array( $this, 'queue_pattern' ), 20, 2 );
 		add_action( 'deleted_post', array( $this, 'queue_id' ), 20 );
 		add_action( 'wp_trash_post', array( $this, 'queue_id' ), 20 );
 		add_action( 'untrash_post', array( $this, 'queue_id' ), 20 );
@@ -36,6 +44,7 @@ final class Scheduler {
 		add_action( 'added_post_meta', array( $this, 'drop_meta' ), 10, 4 );
 		add_action( 'updated_post_meta', array( $this, 'drop_meta' ), 10, 4 );
 		add_action( self::HOOK, array( $this, 'rebuild' ) );
+		add_action( 'shutdown', array( $this, 'flush_pending' ) );
 	}
 
 	/**
@@ -64,21 +73,43 @@ final class Scheduler {
 	}
 
 	/**
+	 * A synced pattern is not a public post, but pages render its content.
+	 *
+	 * @param int           $post_id Pattern ID.
+	 * @param \WP_Post|null $post    Pattern, when WordPress has it.
+	 */
+	public function queue_pattern( $post_id, $post = null ): void {
+		unset( $post );
+		$post_id = (int) $post_id;
+		if ( $post_id < 1 || wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
+			return;
+		}
+		if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+			return;
+		}
+		if ( ! is_user_logged_in() && ! $this->trusted_context() ) {
+			return;
+		}
+		Store::open()->bump_cache_epoch();
+		$this->coalesce();
+	}
+
+	/**
 	 * @param int $post_id Post ID.
 	 */
 	public function queue_id( $post_id ): void {
 		$post_id = (int) $post_id;
 		$post    = get_post( $post_id );
 		if ( ! $post instanceof \WP_Post ) {
-			Store::from_uploads()->delete_document( $post_id );
-			$this->rewrite_now();
+			$this->coalesce();
 			return;
 		}
 		$this->queue( $post_id, $post );
 	}
 
 	/**
-	 * Pull a document out of the public files when it is no longer published.
+	 * Ask for one rebuild when a document leaves the public set.
+	 * The stored copy stays until that rebuild confirms the replacement.
 	 *
 	 * @param string   $new_status New status.
 	 * @param string   $old_status Old status.
@@ -91,10 +122,8 @@ final class Scheduler {
 		if ( 'publish' === $new_status && '' === (string) $post->post_password ) {
 			return;
 		}
-		Store::from_uploads()->delete_document( (int) $post->ID );
-		// The title and note would stay public until cron. Drop them in this request.
 		if ( 'publish' === $old_status ) {
-			$this->rewrite_now();
+			$this->coalesce();
 		}
 	}
 
@@ -117,12 +146,10 @@ final class Scheduler {
 		if ( Inclusion::allowed( Snapshot::from_post( $post ), Settings::current()->post_types() ) ) {
 			return;
 		}
-		$store = Store::from_uploads();
-		if ( null === $store->read_document( (int) $post->ID ) ) {
+		if ( null === Store::open()->read_document( (int) $post->ID ) ) {
 			return;
 		}
-		$store->delete_document( (int) $post->ID );
-		$this->rewrite_now();
+		$this->coalesce();
 	}
 
 	public function rebuild(): void {
@@ -142,15 +169,26 @@ final class Scheduler {
 	}
 
 	/**
-	 * Rewrite after a post leaves the public set. Content edits keep the debounce.
+	 * Remember that this request needs a single rebuild. Bulk trash calls this many times.
 	 */
-	private function rewrite_now(): void {
-		if ( self::$rewriting ) {
+	private function coalesce(): void {
+		if ( self::$pending || self::$rewriting ) {
 			return;
 		}
 		if ( ! is_user_logged_in() && ! $this->trusted_context() ) {
 			return;
 		}
+		self::$pending = true;
+	}
+
+	/**
+	 * Run the one queued rebuild. Shutdown calls this; tests can call it too.
+	 */
+	public function flush_pending(): void {
+		if ( ! self::$pending || self::$rewriting ) {
+			return;
+		}
+		self::$pending   = false;
 		self::$rewriting = true;
 		try {
 			$this->rebuild();

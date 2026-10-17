@@ -6,6 +6,7 @@
  */
 
 use AiReady\AdminPage;
+use AiReady\CliCommand;
 use AiReady\ExcludeMeta;
 use AiReady\Front;
 use AiReady\Generator;
@@ -122,7 +123,7 @@ class BehaviorTest extends WP_UnitTestCase {
 		$noindex = $this->publish( 'post', 'NOINDEX-MARKER', 'noindex-marker', '<p>NOINDEX-BODY</p>' );
 		update_post_meta( $noindex, '_yoast_wpseo_meta-robots-noindex', '1' );
 
-		Store::from_uploads()->destroy();
+		Store::open()->destroy();
 		wp_clear_scheduled_hook( Scheduler::HOOK );
 		wp_set_current_user( $this->admin );
 		$this->generate();
@@ -131,7 +132,9 @@ class BehaviorTest extends WP_UnitTestCase {
 	public function tear_down(): void {
 		remove_shortcode( 'secret' );
 		remove_shortcode( 'who' );
-		Store::from_uploads()->destroy();
+		remove_all_filters( 'ai_ready_block_store' );
+		remove_all_filters( 'ai_ready_converter_version' );
+		Store::open()->destroy();
 		wp_clear_scheduled_hook( Scheduler::HOOK );
 		parent::tear_down();
 	}
@@ -154,6 +157,19 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertNull( $this->raw_markdown( '/draft-marker.md' ) );
 		$this->assertNull( $this->raw_markdown( '/private-marker.md' ) );
 		$this->assertNull( $this->raw_markdown( '/future-marker.md' ) );
+		$this->assertNull( $this->raw_markdown( '/excluded-marker.md' ) );
+		$this->assertNull( $this->raw_markdown( '/noindex-marker.md' ) );
+		$this->assertNull( $this->raw_markdown( '/cafe-nino/.md' ) );
+
+		$this->go_to( home_url( '/cafe-nino/.md' ) );
+		$this->assertTrue( is_404() );
+		$this->go_to( home_url( '/excluded-marker.md' ) );
+		$this->assertTrue( is_404() );
+
+		$excluded_id = $this->post_id_by_slug( 'excluded-marker' );
+		$this->go_to( get_permalink( $excluded_id ) );
+		$_GET['format'] = 'markdown';
+		$this->assertNull( ( new Front() )->serve_format() );
 
 		$this->go_to( home_url( '/draft-marker.md' ) );
 		$this->assertTrue( is_404() );
@@ -182,6 +198,7 @@ class BehaviorTest extends WP_UnitTestCase {
 				'post_password' => 'now-secret',
 			)
 		);
+		( new Scheduler() )->flush_pending();
 
 		$this->assertStringNotContainsString( 'cafe-nino.md', $this->index() );
 		$this->assertStringNotContainsString( '`<div>`', (string) $this->full() );
@@ -190,10 +207,12 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertStringNotContainsString( 'user-0', $hidden->body() );
 
 		update_post_meta( $this->excerpt_id, ExcludeMeta::META_KEY, '1' );
+		( new Scheduler() )->flush_pending();
 		$this->assertStringNotContainsString( 'river-notes.md', $this->index() );
 		$this->assertStringNotContainsString( 'Manual note about ñ', (string) $this->full() );
 
 		update_post_meta( $this->page_id, '_yoast_wpseo_meta-robots-noindex', '1' );
+		( new Scheduler() )->flush_pending();
 		$this->assertStringNotContainsString( 'old-checklist.md', $this->index() );
 		$this->assertStringNotContainsString( 'Archive page.', (string) $this->full() );
 	}
@@ -263,26 +282,128 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'CHANGED-UNIQUE-STRING', $this->index() );
 	}
 
-	public function test_generated_output_lives_in_one_place(): void {
-		$store = Store::from_uploads();
+	public function test_generated_output_lives_in_the_database(): void {
+		$store = Store::open();
 		$this->assertTrue( $store->has_index() );
 		$this->assertTrue( $store->has_full() );
-		$this->assertNotNull( $store->read_document( $this->public_id ) );
+		$markdown = $store->read_document( $this->public_id );
+		$this->assertIsString( $markdown );
+		$this->assertSame( $store->read_index(), get_option( Store::INDEX_OPTION ) );
+		$this->assertSame( $store->read_full(), get_option( Store::FULL_OPTION ) );
+		$this->assertSame( $markdown, get_post_meta( $this->public_id, Store::META_MARKDOWN, true ) );
 
-		$needle = 'cafe-nino.md';
-		foreach ( wp_load_alloptions() as $key => $value ) {
-			if ( is_string( $value ) && false !== strpos( $value, $needle ) ) {
-				$this->fail( 'Generated output was stored in option ' . $key );
-			}
+		wp_cache_delete( 'alloptions', 'options' );
+		$autoloaded = wp_load_alloptions();
+		$this->assertArrayNotHasKey( Store::INDEX_OPTION, $autoloaded );
+		$this->assertArrayNotHasKey( Store::FULL_OPTION, $autoloaded );
+		$this->assertArrayNotHasKey( Store::GENERATED_OPTION, $autoloaded );
+
+		$uploads = wp_upload_dir( null, false );
+		$this->assertIsArray( $uploads );
+		$this->assertDirectoryDoesNotExist( trailingslashit( (string) $uploads['basedir'] ) . 'ai-ready' );
+		foreach ( Store::legacy_directories() as $dir ) {
+			$this->assertDirectoryDoesNotExist( $dir );
 		}
-		$meta = get_post_meta( $this->public_id );
-		foreach ( $meta as $key => $values ) {
-			foreach ( (array) $values as $value ) {
-				if ( is_string( $value ) && false !== strpos( $value, $needle ) ) {
-					$this->fail( 'Generated output was stored in meta ' . $key );
-				}
+		$this->assertSame( array(), $this->generated_files_under( ABSPATH ) );
+	}
+
+	public function test_upgrade_removes_leftover_directories_only_after_the_write(): void {
+		$uploads = wp_upload_dir( null, false );
+		$this->assertIsArray( $uploads );
+		$public = trailingslashit( (string) $uploads['basedir'] ) . 'ai-ready/current';
+		wp_mkdir_p( $public );
+		file_put_contents( $public . '/llms.txt', "OLD-PUBLIC\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- the test plants a leftover from the old store.
+
+		$private = Store::legacy_directories()[0];
+		wp_mkdir_p( $private . '/current' );
+		file_put_contents( $private . '/current/llms.txt', "OLD-PRIVATE\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		add_filter(
+			'ai_ready_block_store',
+			static function ( $block, $key ) {
+				return 'ai_ready_llms_txt' === $key ? true : $block;
+			},
+			10,
+			2
+		);
+		$failed = Generator::trusted(
+			static function () {
+				return ( new Generator() )->run();
 			}
+		);
+		$this->assertInstanceOf( WP_Error::class, $failed );
+		$this->assertFileExists( $public . '/llms.txt' );
+		$this->assertFileExists( $private . '/current/llms.txt' );
+
+		remove_all_filters( 'ai_ready_block_store' );
+		$this->generate();
+		$this->assertDirectoryDoesNotExist( trailingslashit( (string) $uploads['basedir'] ) . 'ai-ready' );
+		$this->assertDirectoryDoesNotExist( $private );
+		$this->assertStringContainsString( 'cafe-nino.md', $this->index() );
+	}
+
+	public function test_a_failed_write_keeps_the_previous_output_and_is_reported(): void {
+		$extra = $this->publish( 'post', 'Extra page', 'extra-page', '<p>Extra body.</p>' );
+		$this->generate();
+		$before = $this->index();
+		$this->assertStringContainsString( 'extra-page.md', $before );
+		$this->assertNotNull( Store::open()->read_document( $extra ) );
+
+		wp_set_current_user( $this->admin );
+		wp_trash_post( $extra );
+		add_filter(
+			'ai_ready_block_store',
+			static function ( $block, $key ) {
+				return 'ai_ready_llms_txt' === $key ? true : $block;
+			},
+			10,
+			2
+		);
+
+		$stored = 0;
+		add_action(
+			'ai_ready_stored',
+			static function () use ( &$stored ) {
+				++$stored;
+			}
+		);
+		$result = Generator::trusted(
+			static function () {
+				return ( new Generator() )->run();
+			}
+		);
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 'ai_ready_store_failed', $result->get_error_code() );
+		$this->assertSame( 0, $stored );
+		$this->assertSame( $before, $this->index() );
+		$this->assertNotNull( Store::open()->read_document( $extra ) );
+
+		$_REQUEST['_wpnonce'] = wp_create_nonce( 'ai_ready_generate' );
+		$_POST['_wpnonce']    = $_REQUEST['_wpnonce'];
+		$redirected           = false;
+		try {
+			( new AdminPage() )->generate();
+		} catch ( RuntimeException $exception ) {
+			$redirected = 'redirect' === $exception->getMessage();
 		}
+		$this->assertTrue( $redirected );
+		$this->assertSame( $before, $this->index() );
+
+		$_GET['ai_ready_error'] = '1';
+		ob_start();
+		( new AdminPage() )->render();
+		$html = (string) ob_get_clean();
+		$this->assertStringContainsString( 'notice-error', $html );
+		$this->assertStringContainsString( 'could not save llms.txt', $html );
+		$this->assertStringNotContainsString( 'Generated files', $html );
+
+		try {
+			( new CliCommand() )->generate( array(), array() );
+			$this->fail( 'WP-CLI reported success after a failed write.' );
+		} catch ( RuntimeException $exception ) {
+			$this->assertStringContainsString( 'could not save llms.txt', $exception->getMessage() );
+		}
+		$this->assertSame( $before, $this->index() );
 	}
 
 	public function test_unknown_markdown_urls_fall_through(): void {
@@ -353,10 +474,156 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertSame( '', (string) get_post_meta( $this->public_id, ExcludeMeta::META_KEY, true ) );
 	}
 
+	public function test_bulk_trash_rebuilds_once_and_skips_unchanged_documents(): void {
+		$ids = array();
+		for ( $i = 0; $i < 12; $i++ ) {
+			$ids[] = $this->publish( 'post', 'Bulk ' . $i, 'bulk-' . $i, '<p>Body ' . $i . '</p>' );
+		}
+		$this->generate();
+
+		$renders = 0;
+		$runs    = 0;
+		add_filter(
+			'the_content',
+			static function ( $content ) use ( &$renders ) {
+				++$renders;
+				return $content;
+			}
+		);
+		add_action(
+			'ai_ready_stored',
+			static function () use ( &$runs ) {
+				++$runs;
+			}
+		);
+
+		wp_set_current_user( $this->admin );
+		foreach ( array_slice( $ids, 0, 8 ) as $id ) {
+			wp_trash_post( $id );
+		}
+		( new Scheduler() )->flush_pending();
+
+		$this->assertSame( 1, $runs );
+		$this->assertSame( 0, $renders );
+		$index = $this->index();
+		$this->assertStringNotContainsString( 'bulk-0.md', $index );
+		$this->assertStringContainsString( 'bulk-8.md', $index );
+	}
+
+	public function test_manual_generate_bypasses_the_render_cache(): void {
+		$token = 'FRESH-1';
+		add_filter(
+			'the_content',
+			static function ( $content ) use ( &$token ) {
+				return $content . '<p>' . $token . '</p>';
+			}
+		);
+		Generator::trusted(
+			static function () {
+				return ( new Generator() )->run( true );
+			}
+		);
+		$this->assertStringContainsString( 'FRESH-1', $this->document( $this->public_id ) );
+
+		$token = 'FRESH-2';
+		$this->generate();
+		$this->assertStringContainsString( 'FRESH-1', $this->document( $this->public_id ) );
+		$this->assertStringNotContainsString( 'FRESH-2', $this->document( $this->public_id ) );
+
+		wp_set_current_user( $this->admin );
+		$_REQUEST['_wpnonce'] = wp_create_nonce( 'ai_ready_generate' );
+		$_POST['_wpnonce']    = $_REQUEST['_wpnonce'];
+		try {
+			( new AdminPage() )->generate();
+		} catch ( RuntimeException $exception ) {
+			$this->assertSame( 'redirect', $exception->getMessage() );
+		}
+		$this->assertStringContainsString( 'FRESH-2', $this->document( $this->public_id ) );
+		$this->assertStringNotContainsString( 'FRESH-1', $this->document( $this->public_id ) );
+	}
+
+	public function test_a_converter_change_invalidates_the_cache(): void {
+		$renders = 0;
+		add_filter(
+			'the_content',
+			static function ( $content ) use ( &$renders ) {
+				++$renders;
+				return $content;
+			}
+		);
+		$this->generate();
+		$this->assertSame( 0, $renders );
+
+		update_post_meta( $this->public_id, Store::META_CONVERTER, 'old' );
+		$this->generate();
+		$this->assertGreaterThan( 0, $renders );
+	}
+
+	public function test_saving_a_synced_pattern_refreshes_pages_that_use_it(): void {
+		$pattern = (int) self::factory()->post->create(
+			array(
+				'post_type'    => 'wp_block',
+				'post_status'  => 'publish',
+				'post_title'   => 'Promo',
+				'post_content' => "<!-- wp:paragraph -->\n<p>PROMO-OLD</p>\n<!-- /wp:paragraph -->",
+			)
+		);
+		$page    = $this->publish(
+			'page',
+			'Landing',
+			'landing',
+			'<!-- wp:block {"ref":' . $pattern . '} /-->'
+		);
+		$this->generate();
+		$body = $this->document( $page );
+		$this->assertStringContainsString( 'PROMO-OLD', $body );
+		$this->assertStringNotContainsString( 'PROMO-NEW', $body );
+
+		$epoch = Store::open()->cache_epoch();
+		wp_set_current_user( $this->admin );
+		wp_update_post(
+			array(
+				'ID'           => $pattern,
+				'post_content' => "<!-- wp:paragraph -->\n<p>PROMO-NEW</p>\n<!-- /wp:paragraph -->",
+			)
+		);
+		$this->assertGreaterThan( $epoch, Store::open()->cache_epoch() );
+		( new Scheduler() )->flush_pending();
+		$body = $this->document( $page );
+		$this->assertStringContainsString( 'PROMO-NEW', $body );
+		$this->assertStringNotContainsString( 'PROMO-OLD', $body );
+	}
+
+	public function test_saving_settings_rebuilds_the_files(): void {
+		$this->assertStringContainsString( 'old-checklist.md', $this->index() );
+		wp_set_current_user( $this->admin );
+		$_POST                = array(
+			'summary'     => 'Saved summary',
+			'details'     => 'Details',
+			'post_types'  => array( 'post' ),
+			'note_length' => '80',
+			'write_full'  => '1',
+		);
+		$_REQUEST['_wpnonce'] = wp_create_nonce( 'ai_ready_save_settings' );
+		$_POST['_wpnonce']    = $_REQUEST['_wpnonce'];
+		try {
+			( new AdminPage() )->save();
+			$this->fail( 'Save did not redirect.' );
+		} catch ( \RuntimeException $exception ) {
+			$this->assertSame( 'redirect', $exception->getMessage() );
+		}
+		$index = $this->index();
+		$this->assertStringNotContainsString( 'old-checklist.md', $index );
+		$this->assertStringContainsString( 'cafe-nino.md', $index );
+		$this->assertStringContainsString( 'Saved summary', $index );
+	}
+
 	public function test_uninstall_removes_plugin_data(): void {
 		update_post_meta( $this->public_id, ExcludeMeta::META_KEY, '1' );
 		set_transient( 'ai_ready_rebuild', '1', MINUTE_IN_SECONDS );
-		$this->assertTrue( Store::from_uploads()->has_index() );
+		set_transient( Store::ERROR_TRANSIENT, 'failed', MINUTE_IN_SECONDS );
+		$this->assertTrue( Store::open()->has_index() );
+		$this->assertNotSame( '', (string) get_post_meta( $this->public_id, Store::META_MARKDOWN, true ) );
 
 		if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 			define( 'WP_UNINSTALL_PLUGIN', true );
@@ -364,9 +631,40 @@ class BehaviorTest extends WP_UnitTestCase {
 		require dirname( __DIR__, 2 ) . '/uninstall.php';
 
 		$this->assertFalse( get_option( Settings::OPTION ) );
+		$this->assertFalse( get_option( Store::INDEX_OPTION ) );
+		$this->assertFalse( get_option( Store::FULL_OPTION ) );
+		$this->assertFalse( get_option( Store::GENERATED_OPTION ) );
+		$this->assertFalse( get_option( Store::EPOCH_OPTION ) );
 		$this->assertSame( '', (string) get_post_meta( $this->public_id, ExcludeMeta::META_KEY, true ) );
+		$this->assertSame( '', (string) get_post_meta( $this->public_id, Store::META_MARKDOWN, true ) );
+		$this->assertSame( '', (string) get_post_meta( $this->public_id, Store::META_STAMP, true ) );
 		$this->assertFalse( get_transient( 'ai_ready_rebuild' ) );
-		$this->assertFalse( Store::from_uploads()->has_index() );
+		$this->assertFalse( get_transient( Store::ERROR_TRANSIENT ) );
+		$this->assertFalse( Store::open()->has_index() );
+	}
+
+	public function test_deactivation_removes_llms_rewrite_rules(): void {
+		global $wp_rewrite;
+		( new Front() )->rewrites();
+		$wp_rewrite->flush_rules( true );
+
+		$rules = get_option( 'rewrite_rules' );
+		$this->assertIsArray( $rules );
+		$this->assertArrayHasKey( '^llms\.txt$', $rules );
+
+		ai_ready_deactivate();
+
+		$rules = get_option( 'rewrite_rules' );
+		$this->assertIsArray( $rules );
+		$this->assertArrayNotHasKey( '^llms\.txt$', $rules );
+		$this->assertArrayNotHasKey( '^llms-full\.txt$', $rules );
+
+		remove_all_actions( 'parse_request' );
+		remove_all_actions( 'template_redirect' );
+		$this->go_to( home_url( '/llms.txt' ) );
+		$this->assertTrue( is_404() );
+		$target = redirect_canonical( home_url( '/llms.txt' ), false );
+		$this->assertNotSame( home_url( '/' ), $target );
 	}
 
 	public function test_single_site_is_stated_on_the_plugin(): void {
@@ -399,6 +697,43 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertStringContainsString( '/cafe-nino.md', $index );
 		$this->assertStringContainsString( '/old-checklist.md', $index );
 		$this->assertGreaterThan( strpos( $index, '## Posts' ), strpos( $index, '## Optional' ) );
+	}
+
+	public function test_static_front_page_is_served_at_index_md(): void {
+		$front_id = $this->publish( 'page', 'Welcome', 'welcome', '<p>Front door.</p>' );
+		$posts_id = $this->publish( 'page', 'News', 'news', '<p>Posts page body.</p>' );
+		update_option( 'show_on_front', 'page' );
+		update_option( 'page_on_front', $front_id );
+		update_option( 'page_for_posts', $posts_id );
+		$this->generate();
+
+		$index = $this->index();
+		$this->assertStringContainsString( '/index.md', $index );
+		$this->assertStringContainsString( '/news.md', $index );
+		$this->assertStringNotContainsString( '.org.md', $index );
+		$this->assertStringNotContainsString( 'example.com.md', $index );
+
+		$front = $this->markdown_response( '/index.md' );
+		$this->assertSame( 200, $front->status() );
+		$this->assertStringContainsString( 'Front door.', $front->body() );
+
+		$posts = $this->markdown_response( '/news.md' );
+		$this->assertSame( 200, $posts->status() );
+		$this->assertStringContainsString( 'Posts page body.', $posts->body() );
+
+		$this->go_to( home_url( '/' ) );
+		$_GET['format'] = 'markdown';
+		$format = ( new Front() )->serve_format();
+		$this->assertInstanceOf( Response::class, $format );
+		$this->assertSame( 200, $format->status() );
+		$this->assertStringContainsString( 'Front door.', $format->body() );
+
+		$this->go_to( home_url( '/' ) );
+		ob_start();
+		( new Front() )->alternate_link();
+		$head = (string) ob_get_clean();
+		$this->assertStringContainsString( 'index.md', $head );
+		$this->assertStringNotContainsString( '.org.md', $head );
 	}
 
 	/**
@@ -436,19 +771,46 @@ class BehaviorTest extends WP_UnitTestCase {
 	}
 
 	private function index(): string {
-		$body = Store::from_uploads()->read_index();
+		$body = Store::open()->read_index();
 		$this->assertIsString( $body );
 		return $body;
 	}
 
 	private function full(): ?string {
-		return Store::from_uploads()->read_full();
+		return Store::open()->read_full();
 	}
 
 	private function document( int $id ): string {
-		$body = Store::from_uploads()->read_document( $id );
+		$body = Store::open()->read_document( $id );
 		$this->assertIsString( $body );
 		return $body;
+	}
+
+	/**
+	 * @return string[]
+	 */
+	private function generated_files_under( string $root ): array {
+		$found = array();
+		$items = @scandir( $root ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		if ( ! is_array( $items ) ) {
+			return array();
+		}
+		foreach ( $items as $item ) {
+			if ( '.' === $item || '..' === $item ) {
+				continue;
+			}
+			$path = rtrim( $root, '/\\' ) . '/' . $item;
+			if ( is_dir( $path ) ) {
+				foreach ( $this->generated_files_under( $path ) as $nested ) {
+					$found[] = $nested;
+				}
+				continue;
+			}
+			if ( 'llms.txt' === $item || 'llms-full.txt' === $item ) {
+				$found[] = $path;
+			}
+		}
+		return $found;
 	}
 
 	private function raw_markdown( string $path ): ?Response {

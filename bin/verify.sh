@@ -207,11 +207,10 @@ fi
 assert_lacks "$(cat /tmp/ai-ready-hide.txt)" "user-0" "password markdown body"
 assert_lacks "$(curl -fsS "$BASE/llms-full.txt")" '`<div>`' "password leaves the full file"
 
-STORED="$(find "$SITE/wp-content" -name llms.txt)"
-COUNT="$(printf '%s\n' "$STORED" | sed '/^$/d' | wc -l | tr -d ' ')"
-if [[ "$COUNT" != "1" ]]; then
-	echo "FAIL expected one llms.txt, found $COUNT" >&2
-	printf '%s\n' "$STORED" >&2
+WEB="$(find "$SITE" -name llms.txt -print)"
+if [[ -n "${WEB//[[:space:]]/}" ]]; then
+	echo "FAIL generated file is inside the web root" >&2
+	printf '%s\n' "$WEB" >&2
 	exit 1
 fi
 PREFIX="$(command wp db prefix --path="$SITE" | tr -d '[:space:]')"
@@ -219,20 +218,69 @@ if [[ -z "$PREFIX" ]]; then
 	echo "FAIL could not read the database prefix" >&2
 	exit 1
 fi
-OPTIONS="$(command wp db query "SELECT option_name FROM ${PREFIX}options WHERE option_value LIKE '%cafe-nino.md%'" --path="$SITE" --skip-column-names)"
-if [[ -n "${OPTIONS//[[:space:]]/}" ]]; then
-	echo "FAIL generated link stored in options: $OPTIONS" >&2
+INDEX_OPT="$(command wp option get ai_ready_llms_txt --path="$SITE")"
+if [[ "$INDEX_OPT" != "$HIDDEN" ]]; then
+	echo "FAIL served llms.txt is not the stored option" >&2
 	exit 1
 fi
-META="$(command wp db query "SELECT meta_id FROM ${PREFIX}postmeta WHERE meta_value LIKE '%cafe-nino.md%'" --path="$SITE" --skip-column-names)"
-if [[ -n "${META//[[:space:]]/}" ]]; then
-	echo "FAIL generated link stored in post meta: $META" >&2
+assert_contains "$INDEX_OPT" "CHANGED-UNIQUE-STRING" "index option"
+assert_lacks "$INDEX_OPT" "cafe-nino.md" "index option dropped the password"
+FULL_OPT="$(command wp option get ai_ready_llms_full --path="$SITE")"
+assert_contains "$FULL_OPT" "hidden body" "full option"
+AUTO="$(command wp db query "SELECT autoload FROM ${PREFIX}options WHERE option_name IN ('ai_ready_llms_txt','ai_ready_llms_full','ai_ready_generated_at')" --path="$SITE" --skip-column-names)"
+if [[ -z "${AUTO//[[:space:]]/}" ]]; then
+	echo "FAIL could not read autoload flags" >&2
+	exit 1
+fi
+while IFS= read -r flag; do
+	flag="$(printf '%s' "$flag" | tr -d '[:space:]')"
+	if [[ -z "$flag" ]]; then
+		continue
+	fi
+	if [[ "$flag" == "yes" || "$flag" == "on" || "$flag" == "auto" ]]; then
+		echo "FAIL generated option is autoloaded ($flag)" >&2
+		exit 1
+	fi
+done <<< "$AUTO"
+META="$(command wp db query "SELECT meta_value FROM ${PREFIX}postmeta WHERE meta_key='_ai_ready_markdown' AND post_id=${EXCERPT}" --path="$SITE" --skip-column-names)"
+assert_contains "$META" "hidden body" "markdown post meta"
+if [[ "$META" == *cafe-nino.md* ]]; then
+	echo "FAIL document meta stored the index link" >&2
+	exit 1
+fi
+PUBLIC_META="$(command wp db query "SELECT meta_id FROM ${PREFIX}postmeta WHERE meta_key='_ai_ready_markdown' AND post_id=${PUBLIC}" --path="$SITE" --skip-column-names)"
+if [[ -n "${PUBLIC_META//[[:space:]]/}" ]]; then
+	echo "FAIL password document was left in post meta: $PUBLIC_META" >&2
 	exit 1
 fi
 
-DIRECT="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/wp-content/uploads/ai-ready/current/llms.txt")"
-if [[ "$DIRECT" == "200" ]]; then
-	echo "FAIL storage directory is web-accessible" >&2
+DIRECT_BODY="$(curl -s "$BASE/wp-content/uploads/ai-ready/current/llms.txt")"
+DIRECT_CODE="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/wp-content/uploads/ai-ready/current/llms.txt")"
+if [[ "$DIRECT_CODE" == "200" ]]; then
+	echo "FAIL storage URL returned 200 on the plain server" >&2
+	exit 1
+fi
+assert_lacks "$DIRECT_BODY" "CHANGED-UNIQUE-STRING" "plain server file body"
+
+command wp eval '
+$uploads = wp_upload_dir( null, false );
+$dir = trailingslashit( $uploads["basedir"] ) . "ai-ready/current";
+wp_mkdir_p( $dir );
+file_put_contents( $dir . "/llms.txt", "LEFTOVER-PUBLIC" );
+$home = rtrim( ABSPATH, "/\\" );
+$key = substr( hash( "sha256", $home . "|ai-ready-wp" ), 0, 16 );
+$private = dirname( $home ) . "/ai-ready-" . $key . "/current";
+wp_mkdir_p( $private );
+file_put_contents( $private . "/llms.txt", "LEFTOVER-PRIVATE" );
+' --path="$SITE" --quiet
+command wp ai-ready generate --path="$SITE" --quiet
+if [[ -d "$SITE/wp-content/uploads/ai-ready" ]]; then
+	echo "FAIL legacy uploads directory survived generate" >&2
+	exit 1
+fi
+PRIVATE="$(command wp eval 'echo dirname( rtrim( ABSPATH, "/\\" ) ) . "/ai-ready-" . substr( hash( "sha256", rtrim( ABSPATH, "/\\" ) . "|ai-ready-wp" ), 0, 16 );' --path="$SITE")"
+if [[ -d "$PRIVATE" ]]; then
+	echo "FAIL leftover private directory survived generate: $PRIVATE" >&2
 	exit 1
 fi
 

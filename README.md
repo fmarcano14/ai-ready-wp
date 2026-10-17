@@ -1,4 +1,4 @@
-[![CI](https://github.com/fmarcano14/ai-ready-wp/actions/workflows/ci.yml/badge.svg?branch=v1)](https://github.com/fmarcano14/ai-ready-wp/actions/workflows/ci.yml)
+[![CI](https://github.com/fmarcano14/ai-ready-wp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fmarcano14/ai-ready-wp/actions/workflows/ci.yml)
 
 # AI Ready WP
 
@@ -8,7 +8,7 @@ AI Ready WP is a single-site WordPress plugin. It writes `/llms.txt` for the pub
 
 ## Install
 
-1. Copy this directory to `wp-content/plugins/ai-ready-wp`.
+1. Copy this directory to `wp-content/plugins/ai-ready-wp`. PHP 7.4 or newer and the mbstring extension are required. If mbstring is missing, the plugin shows an admin notice and does not load.
 2. Activate **AI Ready WP** on a single site. It does not run on multisite.
 3. Open **Settings > AI Ready** and press **Generate files**.
 
@@ -22,31 +22,31 @@ Pretty permalinks produce `/sample-post.md`. Plain permalinks produce `?format=m
 - Saving a public post schedules one rebuild 30 seconds later. Unpublishing, adding a password, excluding a document, or marking it noindex updates the files in that same request.
 - Deleting the plugin removes its settings, the exclude flag, the scheduled rebuild, and the generated files.
 
-Apache is given an `.htaccess` rule that denies direct requests to `wp-content/uploads/ai-ready/`. On nginx, deny that directory in the server config. The public URLs are `/llms.txt`, `/llms-full.txt`, and the Markdown views.
+`llms.txt`, `llms-full.txt`, and each document's Markdown are stored in the database and served only through the plugin. There is no file under uploads for the web server to fetch. The public URLs are `/llms.txt`, `/llms-full.txt`, and the Markdown views.
 
 ## Sample llms.txt
 
 ```text
-# Café 🌧️
+# Northwind Kitchen
 
-> Resumen ñ
+> Recipes and notes from a small bakery in Portland.
 
-Short details.
+One new recipe each week. Older posts stay in the archive.
 
 ## Posts
 
-- [Café niño 🌧️](https://example.com/cafe-nino.md): Hello <div> user-0 visitor
-- [River notes](https://example.com/river-notes.md): Manual note about ñ
+- [Rye starter, day four](https://example.com/rye-starter.md): How the levain smells when it is ready to bake.
+- [Saturday bread schedule](https://example.com/saturday-bread.md): Oven times for the weekend bake.
 
 ## Optional
 
-- [Old checklist](https://example.com/old-checklist.md): Archive page.
+- [Allergen chart](https://example.com/allergen-chart.md): Flour, nuts, and dairy for each loaf.
 ```
 
 ## Design
 
 Inclusion, notes, and the llms.txt builder are pure PHP and do not load WordPress.
-The plugin reads posts, writes one directory under uploads, and serves those files.
+The plugin reads posts, stores the generated text in the database, and serves it through its own routes.
 Visitors never trigger a rebuild: edits wait on one cron event, and unpublishing, a password, or an exclude flag rewrites the files in that request.
 
 ## License

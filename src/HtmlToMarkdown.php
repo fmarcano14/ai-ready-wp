@@ -107,9 +107,20 @@ final class HtmlToMarkdown {
 
 	private function escape_text( string $text ): string {
 		$text = str_replace( "\xC2\xA0", ' ', $text );
-		$text = str_replace( array( '\\', '`' ), array( '\\\\', '\\`' ), $text );
 		$text = preg_replace( '/\s+/u', ' ', $text );
-		return is_string( $text ) ? $text : '';
+		if ( ! is_string( $text ) ) {
+			return '';
+		}
+		$text = str_replace( array( '\\', '`' ), array( '\\\\', '\\`' ), $text );
+		return str_replace( array( '<', '>' ), array( '&lt;', '&gt;' ), $text );
+	}
+
+	/**
+	 * Alt text and title attributes sit inside Markdown link syntax.
+	 */
+	private function escape_label( string $text ): string {
+		$text = trim( $this->escape_text( $text ) );
+		return str_replace( array( '[', ']', '"' ), array( '\\[', '\\]', '&quot;' ), $text );
 	}
 
 	private function raw_text( \DOMNode $node ): string {
@@ -148,25 +159,45 @@ final class HtmlToMarkdown {
 	}
 
 	private function link( \DOMElement $node ): string {
-		$text = trim( $this->render_children( $node ) );
-		$href = trim( $node->getAttribute( 'href' ) );
+		$text  = trim( $this->render_children( $node ) );
+		$href  = trim( $node->getAttribute( 'href' ) );
+		$title = $this->escape_label( $node->getAttribute( 'title' ) );
 		if ( '' === $text ) {
-			$text = $href;
+			$text = $this->safe_url( $href ) ? $this->escape_label( $href ) : '';
 		}
-		if ( '' === $href || 0 === strpos( $href, 'javascript:' ) ) {
+		if ( ! $this->safe_url( $href ) ) {
 			return $text;
 		}
 		$href = str_replace( array( "\r", "\n", ' ', '(', ')' ), array( '', '', '%20', '%28', '%29' ), $href );
-		return '[' . $text . '](' . $href . ')';
+		if ( '' === $title ) {
+			return '[' . $text . '](' . $href . ')';
+		}
+		return '[' . $text . '](' . $href . ' "' . $title . '")';
 	}
 
 	private function image( \DOMElement $node ): string {
-		$src = trim( $node->getAttribute( 'src' ) );
-		if ( '' === $src ) {
-			return '';
+		$src   = trim( $node->getAttribute( 'src' ) );
+		$alt   = $this->escape_label( $node->getAttribute( 'alt' ) );
+		$title = $this->escape_label( $node->getAttribute( 'title' ) );
+		if ( ! $this->safe_url( $src ) ) {
+			return '' === $title ? $alt : trim( $alt . ' ' . $title );
 		}
-		$alt = trim( $node->getAttribute( 'alt' ) );
-		return '![' . str_replace( array( '[', ']' ), '', $alt ) . '](' . $src . ')';
+		$src = str_replace( array( "\r", "\n", ' ', '(', ')' ), array( '', '', '%20', '%28', '%29' ), $src );
+		if ( '' === $title ) {
+			return '![' . $alt . '](' . $src . ')';
+		}
+		return '![' . $alt . '](' . $src . ' "' . $title . '")';
+	}
+
+	/**
+	 * Reject scriptable schemes, including case and whitespace tricks.
+	 */
+	private function safe_url( string $url ): bool {
+		$url = preg_replace( '/[\x00-\x20\x7F]+/', '', $url );
+		if ( ! is_string( $url ) || '' === $url ) {
+			return false;
+		}
+		return 1 !== preg_match( '/^(javascript|vbscript|data):/i', $url );
 	}
 
 	private function wrap( string $marker, \DOMElement $node ): string {
@@ -218,7 +249,8 @@ final class HtmlToMarkdown {
 	}
 
 	private function table( \DOMElement $node ): string {
-		$rows = array();
+		$rows    = array();
+		$columns = 0;
 		foreach ( $node->getElementsByTagName( 'tr' ) as $row ) {
 			if ( ! $row instanceof \DOMElement ) {
 				continue;
@@ -234,16 +266,26 @@ final class HtmlToMarkdown {
 				}
 				$value   = $this->render_children( $cell );
 				$value   = preg_replace( '/\s+/u', ' ', $value );
-				$cells[] = trim( is_string( $value ) ? $value : '' );
+				$value   = trim( is_string( $value ) ? $value : '' );
+				$cells[] = str_replace( '|', '\\|', $value );
 			}
-			if ( array() !== $cells ) {
-				$rows[] = '| ' . implode( ' | ', $cells ) . ' |';
+			if ( array() === $cells ) {
+				continue;
 			}
+			if ( 0 === $columns ) {
+				$columns = count( $cells );
+			}
+			$rows[] = '| ' . implode( ' | ', $cells ) . ' |';
 		}
-		if ( array() === $rows ) {
+		if ( array() === $rows || $columns < 1 ) {
 			return '';
 		}
-		return implode( "\n", $rows ) . "\n\n";
+		$divider  = '| ' . implode( ' | ', array_fill( 0, $columns, '---' ) ) . ' |';
+		$rendered = $rows[0] . "\n" . $divider;
+		if ( count( $rows ) > 1 ) {
+			$rendered .= "\n" . implode( "\n", array_slice( $rows, 1 ) );
+		}
+		return $rendered . "\n\n";
 	}
 
 	private function block( string $inner ): string {

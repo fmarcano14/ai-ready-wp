@@ -13,13 +13,6 @@ if ( ! is_string( $path ) ) {
 }
 $file = $root . $path;
 
-if ( false !== strpos( $path, '/wp-content/uploads/ai-ready/' ) ) {
-	http_response_code( 403 );
-	header( 'Content-Type: text/plain; charset=utf-8' );
-	echo "Forbidden\n";
-	return true;
-}
-
 if ( '/' !== $path && is_file( $file ) ) {
 	return false;
 }

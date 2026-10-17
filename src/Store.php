@@ -1,6 +1,6 @@
 <?php
 /**
- * One directory of generated files. This is the only copy of that output.
+ * Database storage for generated output. Routes are the only way to read it.
  *
  * @package AiReady
  */
@@ -12,209 +12,335 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * Filesystem storage for llms.txt, llms-full.txt, and per-document Markdown.
+ * llms.txt and llms-full.txt are options. Each document's Markdown is post meta.
+ * Neither is autoloaded. Nothing here is a file the web server can fetch.
  */
 final class Store {
 
-	private string $root;
+	public const INDEX_OPTION = 'ai_ready_llms_txt';
 
-	public function __construct( string $root ) {
-		$this->root = rtrim( $root, '/\\' );
-	}
+	public const FULL_OPTION = 'ai_ready_llms_full';
 
-	public static function from_uploads(): self {
-		$base    = '';
-		$uploads = wp_upload_dir( null, false );
-		if ( is_array( $uploads ) && empty( $uploads['error'] ) && ! empty( $uploads['basedir'] ) ) {
-			$base = (string) $uploads['basedir'];
-		}
-		if ( '' === $base && defined( 'WP_CONTENT_DIR' ) ) {
-			$base = WP_CONTENT_DIR . '/uploads';
-		}
-		return new self( $base . '/ai-ready' );
+	public const GENERATED_OPTION = 'ai_ready_generated_at';
+
+	public const EPOCH_OPTION = 'ai_ready_cache_epoch';
+
+	public const ERROR_TRANSIENT = 'ai_ready_last_error';
+
+	public const META_MARKDOWN = '_ai_ready_markdown';
+
+	public const META_STAMP = '_ai_ready_stamp';
+
+	public const META_NOTE = '_ai_ready_note';
+
+	public const META_CONVERTER = '_ai_ready_converter';
+
+	public static function open(): self {
+		return new self();
 	}
 
 	/**
-	 * Replace the current generation. Running it twice with the same input converges.
+	 * Directories older versions wrote. Removed only after a confirmed write.
 	 *
-	 * @param Document[] $documents Documents to keep.
+	 * @return string[]
 	 */
-	public function replace( string $index, ?string $full, array $documents ): void {
-		$this->mkdir( $this->root );
-		$this->clean_leftovers();
-		$token   = bin2hex( random_bytes( 8 ) );
-		$staging = $this->root . '/staging-' . $token;
-		$this->mkdir( $staging . '/docs' );
-		$this->write( $staging . '/llms.txt', $index );
-		if ( null !== $full ) {
-			$this->write( $staging . '/llms-full.txt', $full );
+	public static function legacy_directories(): array {
+		$home = defined( 'ABSPATH' ) ? rtrim( (string) ABSPATH, '/\\' ) : '';
+		$key  = substr( hash( 'sha256', $home . '|ai-ready-wp' ), 0, 16 );
+		$name = 'ai-ready-' . $key;
+		$dirs = array();
+		if ( '' !== $home ) {
+			$dirs[] = dirname( $home ) . '/' . $name;
 		}
+		$dirs[] = rtrim( sys_get_temp_dir(), '/\\' ) . '/' . $name;
+		if ( function_exists( 'wp_upload_dir' ) ) {
+			$uploads = wp_upload_dir( null, false );
+			if ( is_array( $uploads ) && ! empty( $uploads['basedir'] ) ) {
+				$dirs[] = rtrim( (string) $uploads['basedir'], '/\\' ) . '/ai-ready';
+			}
+		}
+		return array_values( array_unique( $dirs ) );
+	}
+
+	/**
+	 * Swap in the new copy, confirm it, then drop anything it replaces.
+	 *
+	 * A failed step returns WP_Error and leaves the previous copy in place.
+	 *
+	 * @param Document[]                        $documents Documents to keep.
+	 * @param array<int, array<string, string>> $cache     Per-document reuse records.
+	 * @return true|\WP_Error
+	 */
+	public function replace( string $index, ?string $full, array $documents, array $cache = array() ) {
+		$kept = array();
 		foreach ( $documents as $document ) {
 			if ( ! $document instanceof Document || $document->id() < 1 ) {
 				continue;
 			}
-			$this->write( $staging . '/docs/' . $document->id() . '.md', $document->markdown() );
+			$id        = $document->id();
+			$row       = ( isset( $cache[ $id ] ) && is_array( $cache[ $id ] ) ) ? $cache[ $id ] : array();
+			$stamp     = ( isset( $row['stamp'] ) && is_string( $row['stamp'] ) ) ? $row['stamp'] : '';
+			$note      = ( isset( $row['note'] ) && is_string( $row['note'] ) ) ? $row['note'] : $document->note();
+			$converter = ( isset( $row['converter'] ) && is_string( $row['converter'] ) ) ? $row['converter'] : '';
+			$written   = $this->write_meta( $id, self::META_MARKDOWN, $document->markdown() )
+				&& $this->write_meta( $id, self::META_STAMP, $stamp )
+				&& $this->write_meta( $id, self::META_NOTE, $note )
+				&& $this->write_meta( $id, self::META_CONVERTER, $converter );
+			if ( ! $written ) {
+				return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not save a document.', 'ai-ready-wp' ) );
+			}
+			$kept[] = $id;
 		}
 
-		$current = $this->current_dir();
-		$backup  = $this->root . '/backup-' . $token;
-		if ( is_dir( $current ) ) {
-			rename( $current, $backup );
+		if ( ! $this->write_option( self::INDEX_OPTION, $index ) ) {
+			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not save llms.txt.', 'ai-ready-wp' ) );
 		}
-		rename( $staging, $current );
-		if ( is_dir( $backup ) ) {
-			$this->rmtree( $backup );
+		if ( null === $full ) {
+			$full_ok = $this->clear_option( self::FULL_OPTION );
+		} else {
+			$full_ok = $this->write_option( self::FULL_OPTION, $full );
 		}
-		$this->protect();
+		if ( ! $full_ok ) {
+			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not save llms-full.txt.', 'ai-ready-wp' ) );
+		}
+		if ( ! $this->write_option( self::GENERATED_OPTION, (string) time() ) ) {
+			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not save the generation time.', 'ai-ready-wp' ) );
+		}
+		if ( ! $this->delete_stale( $kept ) ) {
+			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not remove the previous documents.', 'ai-ready-wp' ) );
+		}
+		if ( ! $this->remove_legacy() ) {
+			return new \WP_Error( 'ai_ready_store_failed', __( 'AI Ready could not remove the previous files.', 'ai-ready-wp' ) );
+		}
+		delete_transient( self::ERROR_TRANSIENT );
+		return true;
 	}
 
 	public function read_index(): ?string {
-		return $this->read_named( 'llms.txt' );
+		return $this->read_option( self::INDEX_OPTION );
 	}
 
 	public function read_full(): ?string {
-		return $this->read_named( 'llms-full.txt' );
+		return $this->read_option( self::FULL_OPTION );
+	}
+
+	/**
+	 * @return array{stamp: string, markdown: string, note: string, converter: string}|null
+	 */
+	public function read_cache( int $id ): ?array {
+		if ( $id < 1 ) {
+			return null;
+		}
+		$stamp     = get_post_meta( $id, self::META_STAMP, true );
+		$markdown  = get_post_meta( $id, self::META_MARKDOWN, true );
+		$note      = get_post_meta( $id, self::META_NOTE, true );
+		$converter = get_post_meta( $id, self::META_CONVERTER, true );
+		if ( ! is_string( $stamp ) || '' === $stamp || ! is_string( $markdown ) || ! is_string( $note ) ) {
+			return null;
+		}
+		return array(
+			'stamp'     => $stamp,
+			'markdown'  => $markdown,
+			'note'      => $note,
+			'converter' => is_string( $converter ) ? $converter : '',
+		);
 	}
 
 	public function read_document( int $id ): ?string {
 		if ( $id < 1 ) {
 			return null;
 		}
-		return $this->read_inside( $this->current_dir() . '/docs/' . $id . '.md' );
-	}
-
-	public function delete_document( int $id ): void {
-		if ( $id < 1 ) {
-			return;
+		$value = get_post_meta( $id, self::META_MARKDOWN, true );
+		if ( ! is_string( $value ) || ! metadata_exists( 'post', $id, self::META_MARKDOWN ) ) {
+			return null;
 		}
-		$path = $this->current_dir() . '/docs/' . $id . '.md';
-		if ( is_file( $path ) ) {
-			unlink( $path );
-		}
+		return $value;
 	}
 
 	public function has_index(): bool {
-		return is_file( $this->current_dir() . '/llms.txt' );
+		return is_string( get_option( self::INDEX_OPTION, null ) );
 	}
 
 	public function has_full(): bool {
-		return is_file( $this->current_dir() . '/llms-full.txt' );
+		return is_string( get_option( self::FULL_OPTION, null ) );
 	}
 
 	public function generated_at(): int {
-		$path = $this->current_dir() . '/llms.txt';
-		return is_file( $path ) ? (int) filemtime( $path ) : 0;
+		return (int) get_option( self::GENERATED_OPTION, 0 );
+	}
+
+	public function cache_epoch(): int {
+		return (int) get_option( self::EPOCH_OPTION, 0 );
+	}
+
+	public function bump_cache_epoch(): void {
+		update_option( self::EPOCH_OPTION, (string) ( $this->cache_epoch() + 1 ), false );
 	}
 
 	/**
 	 * @return int[]
 	 */
 	public function document_ids(): array {
-		$dir = $this->current_dir() . '/docs';
-		if ( ! is_dir( $dir ) ) {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
 			return array();
 		}
-		$ids   = array();
-		$items = scandir( $dir );
-		if ( ! is_array( $items ) ) {
+		// The id list is the source of truth for this generation, so it is not cached.
+		$ids = $wpdb->get_col( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$wpdb->prepare(
+				"SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = %s",
+				self::META_MARKDOWN
+			)
+		);
+		if ( ! is_array( $ids ) ) {
 			return array();
 		}
-		foreach ( $items as $item ) {
-			if ( preg_match( '/\A(\d+)\.md\z/', $item, $match ) ) {
-				$ids[] = (int) $match[1];
+		$clean = array();
+		foreach ( $ids as $id ) {
+			$id = (int) $id;
+			if ( $id > 0 ) {
+				$clean[] = $id;
 			}
 		}
-		sort( $ids );
-		return $ids;
-	}
-
-	public function destroy(): void {
-		if ( is_dir( $this->root ) ) {
-			$this->rmtree( $this->root );
-		}
-	}
-
-	private function read_named( string $name ): ?string {
-		if ( 'llms.txt' !== $name && 'llms-full.txt' !== $name ) {
-			return null;
-		}
-		return $this->read_inside( $this->current_dir() . '/' . $name );
-	}
-
-	private function read_inside( string $path ): ?string {
-		if ( ! is_file( $path ) ) {
-			return null;
-		}
-		$real = realpath( $path );
-		$root = realpath( $this->current_dir() );
-		if ( false === $real || false === $root ) {
-			return null;
-		}
-		$prefix = $root . DIRECTORY_SEPARATOR;
-		if ( 0 !== strpos( $real, $prefix ) && $real !== $root ) {
-			return null;
-		}
-		$body = file_get_contents( $real );
-		return is_string( $body ) ? $body : null;
-	}
-
-	private function current_dir(): string {
-		return $this->root . '/current';
-	}
-
-	private function write( string $path, string $body ): void {
-		file_put_contents( $path, $body, LOCK_EX );
-	}
-
-	private function mkdir( string $dir ): void {
-		if ( ! is_dir( $dir ) ) {
-			mkdir( $dir, 0755, true );
-		}
-	}
-
-	private function clean_leftovers(): void {
-		if ( ! is_dir( $this->root ) ) {
-			return;
-		}
-		$items = scandir( $this->root );
-		if ( ! is_array( $items ) ) {
-			return;
-		}
-		foreach ( $items as $item ) {
-			if ( 0 === strpos( $item, 'staging-' ) || 0 === strpos( $item, 'backup-' ) ) {
-				$this->rmtree( $this->root . '/' . $item );
-			}
-		}
+		$clean = array_values( array_unique( $clean ) );
+		sort( $clean );
+		return $clean;
 	}
 
 	/**
-	 * Block direct web access on Apache. PHP still reads the files.
+	 * Drop generated rows and any leftover directories from older versions.
 	 */
-	private function protect(): void {
-		$rules = "<IfModule mod_authz_core.c>\n\tRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n\tDeny from all\n</IfModule>\n";
-		$this->write( $this->root . '/.htaccess', $rules );
-		$this->write( $this->root . '/index.php', "<?php\n// Silence is golden.\n" );
+	public function destroy(): void {
+		delete_option( self::INDEX_OPTION );
+		delete_option( self::FULL_OPTION );
+		delete_option( self::GENERATED_OPTION );
+		delete_option( self::EPOCH_OPTION );
+		delete_transient( self::ERROR_TRANSIENT );
+		delete_metadata( 'post', 0, self::META_MARKDOWN, '', true );
+		delete_metadata( 'post', 0, self::META_STAMP, '', true );
+		delete_metadata( 'post', 0, self::META_NOTE, '', true );
+		delete_metadata( 'post', 0, self::META_CONVERTER, '', true );
+		$this->remove_legacy();
 	}
 
-	private function rmtree( string $dir ): void {
-		if ( ! is_dir( $dir ) ) {
-			return;
+	private function read_option( string $name ): ?string {
+		$value = get_option( $name, null );
+		return is_string( $value ) ? $value : null;
+	}
+
+	/**
+	 * update_option() is false both when the write fails and when the value did not change.
+	 * The read-back is the confirmation.
+	 */
+	private function write_option( string $name, string $value ): bool {
+		if ( $this->blocked( $name ) ) {
+			return false;
 		}
-		$items = scandir( $dir );
+		update_option( $name, $value, false );
+		$stored = get_option( $name, null );
+		return is_string( $stored ) && $stored === $value;
+	}
+
+	private function clear_option( string $name ): bool {
+		if ( $this->blocked( $name ) ) {
+			return false;
+		}
+		delete_option( $name );
+		return null === $this->read_option( $name );
+	}
+
+	private function write_meta( int $id, string $key, string $value ): bool {
+		if ( $this->blocked( $key ) ) {
+			return false;
+		}
+		// update_post_meta() unslashes. Slash first so Markdown backslashes survive the round trip.
+		update_post_meta( $id, $key, wp_slash( $value ) );
+		if ( ! metadata_exists( 'post', $id, $key ) ) {
+			return false;
+		}
+		$stored = get_post_meta( $id, $key, true );
+		return is_string( $stored ) && $stored === $value;
+	}
+
+	/**
+	 * @param int[] $keep Document ids that belong to the new copy.
+	 */
+	private function delete_stale( array $keep ): bool {
+		$keep_map = array();
+		foreach ( $keep as $id ) {
+			$keep_map[ (int) $id ] = true;
+		}
+		foreach ( $this->document_ids() as $id ) {
+			if ( isset( $keep_map[ $id ] ) ) {
+				continue;
+			}
+			if ( $this->blocked( 'delete' ) ) {
+				return false;
+			}
+			foreach ( array( self::META_MARKDOWN, self::META_STAMP, self::META_NOTE, self::META_CONVERTER ) as $key ) {
+				delete_post_meta( $id, $key );
+				if ( metadata_exists( 'post', $id, $key ) ) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Older builds wrote a directory outside the web root, or under uploads.
+	 * A path this process cannot see (open_basedir) is not ours to delete.
+	 */
+	private function remove_legacy(): bool {
+		if ( $this->blocked( 'legacy' ) ) {
+			return false;
+		}
+		foreach ( self::legacy_directories() as $dir ) {
+			if ( ! $this->remove_tree( $dir ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private function remove_tree( string $dir ): bool {
+		if ( ! @is_dir( $dir ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- open_basedir warns when the parent is hidden.
+			return true;
+		}
+		$items = @scandir( $dir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- same open_basedir boundary as is_dir.
 		if ( ! is_array( $items ) ) {
-			return;
+			return false;
 		}
 		foreach ( $items as $item ) {
 			if ( '.' === $item || '..' === $item ) {
 				continue;
 			}
 			$path = $dir . '/' . $item;
-			if ( is_dir( $path ) ) {
-				$this->rmtree( $path );
+			if ( @is_dir( $path ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+				if ( ! $this->remove_tree( $path ) ) {
+					return false;
+				}
 				continue;
 			}
-			unlink( $path );
+			if ( function_exists( 'wp_delete_file' ) ) {
+				wp_delete_file( $path );
+			} elseif ( ! @unlink( $path ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink
+				return false;
+			}
+			if ( file_exists( $path ) ) {
+				return false;
+			}
 		}
-		rmdir( $dir );
+		if ( ! @rmdir( $dir ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_rmdir
+			return ! @is_dir( $dir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		}
+		return true;
+	}
+
+	/**
+	 * Tests set this filter to force one write to fail.
+	 */
+	private function blocked( string $key ): bool {
+		return (bool) apply_filters( 'ai_ready_block_store', false, $key );
 	}
 }

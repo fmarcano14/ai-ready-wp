@@ -74,6 +74,9 @@ final class Text {
 	 * Cut on a sentence or word boundary without splitting a UTF-8 character.
 	 */
 	public static function boundary( string $text, int $limit ): string {
+		if ( ! extension_loaded( 'mbstring' ) ) {
+			return '';
+		}
 		$text = self::collapse( self::valid_utf8( $text ) );
 		if ( $limit < 1 || '' === $text ) {
 			return '';
@@ -105,6 +108,9 @@ final class Text {
 	}
 
 	private static function valid_utf8( string $text ): string {
+		if ( ! extension_loaded( 'mbstring' ) ) {
+			return 1 === preg_match( '//u', $text ) ? $text : '';
+		}
 		if ( mb_check_encoding( $text, 'UTF-8' ) ) {
 			return $text;
 		}

@@ -51,7 +51,7 @@ final class LlmsTxtTest extends TestCase {
 
 		$this->assertStringStartsWith( "# Café\n", $index );
 		$this->assertStringContainsString( '> Public content from Café.', $index );
-		$this->assertStringContainsString( "## Optional\n", $index );
+		$this->assertStringNotContainsString( "## Optional\n", $index );
 		$this->assertNotSame( '', trim( $index ) );
 		$this->assertTrue( mb_check_encoding( $index, 'UTF-8' ) );
 	}
@@ -90,6 +90,7 @@ final class LlmsTxtTest extends TestCase {
 		);
 		$index   = ( new LlmsTxt() )->index( $catalog );
 		$this->assertStringContainsString( '[A (weird) title](https://example.com/a%20%281%29.md)', $index );
+		$this->assertStringNotContainsString( "## Optional\n", $index );
 	}
 
 	private function catalog(): Catalog {

@@ -37,7 +37,7 @@ final class AdminPage {
 			return;
 		}
 		$settings = Settings::current();
-		$store    = Store::from_uploads();
+		$store    = Store::open();
 		$types    = $this->public_types();
 		$count    = count( $store->document_ids() );
 		$when     = $store->generated_at();
@@ -80,7 +80,7 @@ final class AdminPage {
 						<th scope="row"><label for="ai_ready_summary"><?php echo esc_html__( 'Summary', 'ai-ready-wp' ); ?></label></th>
 						<td>
 							<textarea name="summary" id="ai_ready_summary" class="large-text" rows="3"><?php echo esc_textarea( $settings->summary() ); ?></textarea>
-							<p class="description"><?php echo esc_html__( 'Used as the blockquote under the site name. Leave blank to use the tagline.', 'ai-ready-wp' ); ?></p>
+							<p class="description"><?php echo esc_html__( 'One sentence under the site title in llms.txt. Leave this blank to reuse the tagline.', 'ai-ready-wp' ); ?></p>
 						</td>
 					</tr>
 					<tr>
@@ -110,7 +110,7 @@ final class AdminPage {
 									<?php echo esc_html( $label ); ?>
 								</label>
 							<?php endforeach; ?>
-							<p class="description"><?php echo esc_html__( 'Checked types are listed under Optional. Agents can skip that section.', 'ai-ready-wp' ); ?></p>
+							<p class="description"><?php echo esc_html__( 'Checked types are grouped under an Optional heading.', 'ai-ready-wp' ); ?></p>
 						</td>
 					</tr>
 					<tr>
@@ -168,6 +168,17 @@ final class AdminPage {
 			array_keys( $this->public_types() )
 		);
 		update_option( self::option_name(), $clean->to_array(), true );
+		$result = Generator::trusted(
+			static function () {
+				return ( new Generator() )->run();
+			}
+		);
+		if ( is_wp_error( $result ) ) {
+			$this->remember_error( $result );
+			$this->finish( add_query_arg( 'ai_ready_error', '1', $this->url() ) );
+			return;
+		}
+		delete_transient( Store::ERROR_TRANSIENT );
 		$this->finish( add_query_arg( 'updated', '1', $this->url() ) );
 	}
 
@@ -178,9 +189,15 @@ final class AdminPage {
 		check_admin_referer( 'ai_ready_generate' );
 		$count = Generator::trusted(
 			static function () {
-				return ( new Generator() )->run();
+				return ( new Generator() )->run( true );
 			}
 		);
+		if ( is_wp_error( $count ) ) {
+			$this->remember_error( $count );
+			$this->finish( add_query_arg( 'ai_ready_error', '1', $this->url() ) );
+			return;
+		}
+		delete_transient( Store::ERROR_TRANSIENT );
 		$this->finish(
 			add_query_arg(
 				array(
@@ -190,6 +207,17 @@ final class AdminPage {
 				$this->url()
 			)
 		);
+	}
+
+	/**
+	 * @param \WP_Error $error Storage or generation error.
+	 */
+	private function remember_error( \WP_Error $error ): void {
+		$message = $error->get_error_message();
+		if ( ! is_string( $message ) || '' === $message ) {
+			$message = __( 'AI Ready could not save the generated output.', 'ai-ready-wp' );
+		}
+		set_transient( Store::ERROR_TRANSIENT, $message, MINUTE_IN_SECONDS );
 	}
 
 	/**
@@ -208,6 +236,13 @@ final class AdminPage {
 		// Redirect flags from our own admin-post handlers, not a form submission.
 		if ( isset( $_GET['updated'] ) && '1' === sanitize_text_field( wp_unslash( $_GET['updated'] ) ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			echo '<div class="notice notice-success"><p>' . esc_html__( 'Settings saved.', 'ai-ready-wp' ) . '</p></div>';
+		}
+		if ( isset( $_GET['ai_ready_error'] ) && '1' === sanitize_text_field( wp_unslash( $_GET['ai_ready_error'] ) ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$stored  = get_transient( Store::ERROR_TRANSIENT );
+			$message = is_string( $stored ) && '' !== $stored
+				? $stored
+				: __( 'AI Ready could not save the generated output.', 'ai-ready-wp' );
+			echo '<div class="notice notice-error"><p>' . esc_html( $message ) . '</p></div>';
 		}
 		if ( isset( $_GET['generated'] ) && '1' === sanitize_text_field( wp_unslash( $_GET['generated'] ) ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			$count = isset( $_GET['count'] ) ? absint( wp_unslash( $_GET['count'] ) ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended

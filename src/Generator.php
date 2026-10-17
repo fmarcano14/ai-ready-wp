@@ -47,17 +47,24 @@ final class Generator {
 		return function_exists( 'wp_doing_cron' ) && wp_doing_cron();
 	}
 
-	public function run(): int {
+	/**
+	 * @param bool $fresh True skips the reuse cache. Manual generate and WP-CLI pass true.
+	 * @return int|\WP_Error Document count, or the storage error. Never a count when the write failed.
+	 */
+	public function run( bool $fresh = false ) {
 		if ( ! self::generation_allowed() ) {
 			return 0;
 		}
 
-		$settings  = Settings::current();
-		$posts     = $this->posts( $settings );
-		$reader    = new ContentReader();
-		$converter = new HtmlToMarkdown();
-		$builder   = new LlmsTxt();
-		$documents = array();
+		$settings          = Settings::current();
+		$posts             = $this->posts( $settings );
+		$reader            = new ContentReader();
+		$converter         = new HtmlToMarkdown();
+		$builder           = new LlmsTxt();
+		$store             = Store::open();
+		$documents         = array();
+		$cache             = array();
+		$converter_version = $this->converter_version();
 
 		$previous = get_current_user_id();
 		wp_set_current_user( 0 );
@@ -67,16 +74,33 @@ final class Generator {
 				if ( ! Inclusion::allowed( $facts, $settings->post_types() ) ) {
 					continue;
 				}
-				$html        = Text::strip_shortcodes( $reader->render( $post ) );
-				$body        = $converter->convert( $html );
-				$title       = $this->title( $post );
-				$documents[] = new Document(
-					(int) $post->ID,
+				$id    = (int) $post->ID;
+				$title = $this->title( $post );
+				$stamp = $this->stamp( $post, $settings, $facts, $store );
+				$prior = $store->read_cache( $id );
+				$reuse = ! $fresh && $this->cache_matches( $prior, $stamp, $converter_version );
+				if ( $reuse ) {
+					$page = $prior['markdown'];
+					$note = $prior['note'];
+				} else {
+					$html = Text::strip_shortcodes( $reader->render( $post ) );
+					$body = $converter->convert( $html );
+					$page = LlmsTxt::page( $title, $body );
+					$note = Text::note( (string) $post->post_excerpt, $html, $settings->note_length() );
+				}
+				$cache[ $id ] = array(
+					'stamp'     => $stamp,
+					'markdown'  => $page,
+					'note'      => $note,
+					'converter' => $converter_version,
+				);
+				$documents[]  = new Document(
+					$id,
 					$title,
 					$this->html_url( $post ),
 					Urls::markdown( $post ),
-					Text::note( (string) $post->post_excerpt, $html, $settings->note_length() ),
-					LlmsTxt::page( $title, $body ),
+					$note,
+					$page,
 					$this->section_label( $post ),
 					$settings->is_optional( (string) $post->post_type )
 				);
@@ -87,8 +111,63 @@ final class Generator {
 
 		$catalog = new Catalog( $this->site_name(), $this->summary( $settings ), $settings->details(), $documents );
 		$full    = $settings->write_full() ? $builder->full( $catalog ) : null;
-		Store::from_uploads()->replace( $builder->index( $catalog ), $full, $documents );
+		$stored  = $store->replace( $builder->index( $catalog ), $full, $documents, $cache );
+		if ( is_wp_error( $stored ) ) {
+			return $stored;
+		}
+		do_action( 'ai_ready_stored', count( $documents ) );
 		return count( $documents );
+	}
+
+	private function stamp( \WP_Post $post, Settings $settings, PostFacts $facts, Store $store ): string {
+		return hash(
+			'sha256',
+			implode(
+				"\n",
+				array(
+					AI_READY_VERSION,
+					$this->converter_version(),
+					(string) $store->cache_epoch(),
+					(string) $post->post_modified_gmt,
+					(string) $post->post_title,
+					(string) $post->post_excerpt,
+					(string) $post->post_name,
+					(string) $post->post_type,
+					(string) $settings->note_length(),
+					$facts->excluded() ? '1' : '0',
+					$facts->noindex() ? '1' : '0',
+					(string) $post->post_password,
+				)
+			)
+		);
+	}
+
+	/**
+	 * @param array{stamp: string, markdown: string, note: string, converter: string}|null $prior Stored row.
+	 */
+	private function cache_matches( $prior, string $stamp, string $converter_version ): bool {
+		if ( ! is_array( $prior ) || ! isset( $prior['stamp'], $prior['markdown'], $prior['note'], $prior['converter'] ) ) {
+			return false;
+		}
+		if ( ! is_string( $prior['converter'] ) || strlen( $prior['converter'] ) !== strlen( $converter_version ) ) {
+			return false;
+		}
+		if ( ! hash_equals( $converter_version, $prior['converter'] ) ) {
+			return false;
+		}
+		if ( ! is_string( $prior['stamp'] ) || strlen( $prior['stamp'] ) !== strlen( $stamp ) ) {
+			return false;
+		}
+		return hash_equals( $stamp, $prior['stamp'] );
+	}
+
+	private function converter_version(): string {
+		$version  = defined( 'AI_READY_CONVERTER' ) ? (string) AI_READY_CONVERTER : '1';
+		$filtered = apply_filters( 'ai_ready_converter_version', $version );
+		if ( ! is_string( $filtered ) || '' === $filtered ) {
+			return $version;
+		}
+		return $filtered;
 	}
 
 	/**

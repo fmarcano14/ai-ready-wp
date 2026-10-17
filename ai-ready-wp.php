@@ -19,6 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 define( 'AI_READY_VERSION', '1.0.0' );
 define( 'AI_READY_FILE', __FILE__ );
+define( 'AI_READY_CONVERTER', '1' );
 
 /**
  * Load plugin classes without Composer so a normal install does not need vendor/.
@@ -42,6 +43,11 @@ spl_autoload_register( 'ai_ready_autoload' );
  * Boot the single-site plugin.
  */
 function ai_ready_boot() {
+	// WordPress polyfills mb_strlen(). mb_check_encoding() still needs the extension.
+	if ( ! extension_loaded( 'mbstring' ) ) {
+		add_action( 'admin_notices', 'ai_ready_mbstring_notice' );
+		return;
+	}
 	if ( is_multisite() ) {
 		add_action( 'admin_notices', 'ai_ready_multisite_notice' );
 		return;
@@ -61,6 +67,10 @@ function ai_ready_boot() {
  * Activation flushes rewrite rules once. It does not build the files.
  */
 function ai_ready_activate() {
+	if ( ! extension_loaded( 'mbstring' ) ) {
+		deactivate_plugins( plugin_basename( AI_READY_FILE ) );
+		wp_die( esc_html__( 'AI Ready WP needs the PHP mbstring extension.', 'ai-ready-wp' ) );
+	}
 	if ( is_multisite() ) {
 		deactivate_plugins( plugin_basename( AI_READY_FILE ) );
 		wp_die( esc_html__( 'AI Ready WP is a single-site plugin and does not run on multisite.', 'ai-ready-wp' ) );
@@ -71,10 +81,38 @@ function ai_ready_activate() {
 
 /**
  * Deactivation drops rewrite rules and leaves generated files for uninstall.
+ * Rules added on init are still in memory, so they have to be removed before the flush.
+ * Otherwise /llms.txt stays in the rewrite list and WordPress sends it to the home page.
  */
 function ai_ready_deactivate() {
 	wp_clear_scheduled_hook( 'ai_ready_rebuild' );
-	flush_rewrite_rules();
+	ai_ready_remove_rewrite_rules();
+	flush_rewrite_rules( false );
+}
+
+/**
+ * Drop this plugin's rewrite rules from the in-memory list.
+ */
+function ai_ready_remove_rewrite_rules() {
+	global $wp_rewrite;
+	if ( ! $wp_rewrite instanceof WP_Rewrite ) {
+		return;
+	}
+	foreach ( array( '^llms\.txt$', '^llms-full\.txt$' ) as $regex ) {
+		unset( $wp_rewrite->extra_rules_top[ $regex ], $wp_rewrite->extra_rules[ $regex ] );
+	}
+}
+
+/**
+ * Admin notice when PHP was built without mbstring.
+ */
+function ai_ready_mbstring_notice() {
+	if ( ! current_user_can( 'activate_plugins' ) ) {
+		return;
+	}
+	echo '<div class="notice notice-error"><p>';
+	echo esc_html__( 'AI Ready WP needs the PHP mbstring extension. It stays inactive until mbstring is installed.', 'ai-ready-wp' );
+	echo '</p></div>';
 }
 
 /**

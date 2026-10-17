@@ -96,7 +96,7 @@ final class Front {
 		if ( ! $post instanceof \WP_Post || ! $this->included( $post ) ) {
 			return;
 		}
-		if ( null === Store::from_uploads()->read_document( (int) $post->ID ) ) {
+		if ( null === Store::open()->read_document( (int) $post->ID ) ) {
 			return;
 		}
 		echo '<link rel="alternate" type="text/markdown" href="' . esc_url( Urls::markdown( $post ) ) . "\" />\n";
@@ -111,6 +111,13 @@ final class Front {
 		$post     = null;
 		if ( strlen( $path ) >= 3 && '.md' === substr( $path, -3 ) ) {
 			$post = $this->resolve_post( substr( $path, 0, -3 ) );
+			if ( $post instanceof \WP_Post && ! $this->same_markdown_path( $path, $post ) ) {
+				// /post/.md is a different URL from /post.md. Leave it for WordPress.
+				$post = null;
+			}
+			if ( $post instanceof \WP_Post && $this->falls_through( $post ) ) {
+				$post = null;
+			}
 			if ( $post instanceof \WP_Post ) {
 				$resolved = true;
 				$id       = (int) $post->ID;
@@ -121,12 +128,14 @@ final class Front {
 	}
 
 	public function serve_format(): ?Response {
-		$singular = is_singular();
-		$post     = $singular ? get_queried_object() : null;
+		$post = is_singular() ? get_queried_object() : null;
+		if ( $post instanceof \WP_Post && $this->falls_through( $post ) ) {
+			$post = null;
+		}
 		$resolved = $post instanceof \WP_Post;
 		$included = $resolved && $this->included( $post );
 		$id       = $resolved ? (int) $post->ID : 0;
-		return $this->answer( Route::decide_format( $this->wants_markdown(), $singular, $resolved, $included, $id ), $resolved ? $post : null );
+		return $this->answer( Route::decide_format( $this->wants_markdown(), $resolved, $resolved, $included, $id ), $resolved ? $post : null );
 	}
 
 	/**
@@ -149,7 +158,7 @@ final class Front {
 		if ( ! $post instanceof \WP_Post ) {
 			return Response::not_found();
 		}
-		$body = Store::from_uploads()->read_document( (int) $post->ID );
+		$body = Store::open()->read_document( (int) $post->ID );
 		if ( null === $body ) {
 			return Response::not_found();
 		}
@@ -161,7 +170,7 @@ final class Front {
 	}
 
 	private function stored( string $name ): Response {
-		$store = Store::from_uploads();
+		$store = Store::open();
 		$body  = 'llms.txt' === $name ? $store->read_index() : $store->read_full();
 		if ( null === $body ) {
 			return Response::not_found();
@@ -174,10 +183,38 @@ final class Front {
 		return Inclusion::allowed( Snapshot::from_post( $post ), $settings->post_types() );
 	}
 
+	/**
+	 * Excluded and noindex documents are not this plugin's URLs.
+	 */
+	private function falls_through( \WP_Post $post ): bool {
+		$facts = Snapshot::from_post( $post );
+		return $facts->excluded() || $facts->noindex();
+	}
+
+	private function same_markdown_path( string $request, \WP_Post $post ): bool {
+		$url  = Urls::markdown( $post );
+		$path = wp_parse_url( $url, PHP_URL_PATH );
+		if ( ! is_string( $path ) ) {
+			return false;
+		}
+		$home = wp_parse_url( home_url( '/' ), PHP_URL_PATH );
+		if ( is_string( $home ) && '/' !== $home && 0 === strpos( $path, $home ) ) {
+			$path = (string) substr( $path, strlen( $home ) );
+		}
+		return trim( $path, '/' ) === trim( $request, '/' );
+	}
+
 	private function resolve_post( string $bare ): ?\WP_Post {
 		$bare = trim( $bare, '/' );
 		if ( '' === $bare || false !== strpos( $bare, '..' ) ) {
 			return null;
+		}
+		if ( 'index' === $bare && 'page' === (string) get_option( 'show_on_front' ) ) {
+			$front_id = (int) get_option( 'page_on_front' );
+			$front    = $front_id > 0 ? get_post( $front_id ) : null;
+			if ( $front instanceof \WP_Post && 'publish' === $front->post_status ) {
+				return $front;
+			}
 		}
 		$id = (int) url_to_postid( home_url( '/' . $bare . '/' ) );
 		if ( $id < 1 ) {

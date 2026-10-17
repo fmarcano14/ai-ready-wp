@@ -37,11 +37,6 @@
 		<exclude name="WordPress.Files.FileName.NotHyphenatedLowercase"/>
 	</rule>
 
-	<!-- Generated files are local. Remote HTTP helpers are the wrong tool. -->
-	<rule ref="WordPress.WP.AlternativeFunctions">
-		<exclude-pattern>src/Store.php</exclude-pattern>
-	</rule>
-
 	<!-- DOMDocument property names are fixed by PHP. -->
 	<rule ref="WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase">
 		<exclude-pattern>src/HtmlToMarkdown.php</exclude-pattern>

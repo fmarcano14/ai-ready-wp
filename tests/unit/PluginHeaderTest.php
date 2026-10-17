@@ -24,5 +24,13 @@ final class PluginHeaderTest extends TestCase {
 		$this->assertStringContainsString( 'Single-site only', $src );
 		$this->assertStringContainsString( 'GPL-2.0-or-later', $src );
 		$this->assertStringContainsString( 'Requires PHP: 7.4', $src );
+		$this->assertStringContainsString( 'mbstring', $src );
+		$this->assertStringContainsString( "extension_loaded( 'mbstring' )", $src );
+		$this->assertStringNotContainsString( "function_exists( 'mb_strlen' )", $src );
+		$this->assertStringContainsString( 'function ai_ready_mbstring_notice', $src );
+
+		$composer = file_get_contents( dirname( __DIR__, 2 ) . '/composer.json' );
+		$this->assertIsString( $composer );
+		$this->assertStringContainsString( '"ext-mbstring"', $composer );
 	}
 }
