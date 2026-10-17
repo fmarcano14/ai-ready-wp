@@ -8,6 +8,7 @@
 namespace AiReady\Tests;
 
 use AiReady\Generator;
+use AiReady\Store;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -19,6 +20,8 @@ final class GeneratorGateTest extends TestCase {
 		$this->assertSame( 50, Generator::BATCH_SIZE );
 		$this->assertSame( 10000, Generator::MAX_ITEMS );
 		$this->assertSame( 10485760, Generator::FULL_BYTES );
+		$this->assertLessThanOrEqual( 180, Store::LOCK_TTL );
+		$this->assertGreaterThanOrEqual( 60, Store::LOCK_TTL );
 	}
 
 	public function test_a_normal_call_is_not_allowed_to_generate(): void {

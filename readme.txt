@@ -15,7 +15,7 @@ Single-site only. Publishes llms.txt and Markdown views of public posts and page
 AI Ready WP writes three kinds of files on your server:
 
 * `/llms.txt`, with the site name, a short summary, and links to the public documents.
-* `/llms-full.txt`, with the Markdown of those documents, when you leave that option on. A rebuild keeps at most 10,000 documents, and this file stops at 10 MB.
+* `/llms-full.txt`, with the Markdown of those documents, when you leave that option on. A rebuild keeps at most 10,000 documents, and this file stops at 10 MB. A file that is cut short ends with one line saying it was truncated.
 * A Markdown view of each included post or page at its permalink plus `.md`, or `?format=markdown` when the permalink already has a query string.
 
 The Markdown response uses `text/markdown; charset=utf-8`, `X-Robots-Tag: noindex`, and a canonical link back to the HTML page. The HTML head links to that Markdown URL.

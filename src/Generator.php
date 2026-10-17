@@ -39,6 +39,13 @@ final class Generator {
 	private static bool $trusted = false;
 
 	/**
+	 * Timestamp of the follow-up left in case this process dies mid-rebuild.
+	 *
+	 * @var int
+	 */
+	private static int $crash_retry_at = 0;
+
+	/**
 	 * @param callable $callback Rebuild work.
 	 * @return mixed
 	 */
@@ -85,9 +92,12 @@ final class Generator {
 				__( 'AI Ready is already rebuilding.', 'ai-ready-wp' )
 			);
 		}
+		// A fatal error skips finally, so the event below is what runs after a crash.
+		$this->arm_crash_retry();
 		try {
 			return $this->run_locked( $fresh, $store );
 		} finally {
+			$this->disarm_crash_retry();
 			$store->release_lock();
 		}
 	}
@@ -98,13 +108,16 @@ final class Generator {
 	 * @return int|\WP_Error
 	 */
 	private function run_locked( bool $fresh, Store $store ) {
-		$settings          = Settings::current();
-		$reader            = new ContentReader();
-		$converter         = new HtmlToMarkdown();
-		$rows              = array();
-		$converter_version = $this->converter_version();
-		$done              = 0;
-		$page_number       = 1;
+		$settings           = Settings::current();
+		$reader             = new ContentReader();
+		$converter          = new HtmlToMarkdown();
+		$rows               = array();
+		$converter_version  = $this->converter_version();
+		$done               = 0;
+		$page_number        = 1;
+		$max                = self::item_limit();
+		$truncated          = false;
+		$capped_on_boundary = false;
 
 		$previous = get_current_user_id();
 		wp_set_current_user( 0 );
@@ -113,26 +126,36 @@ final class Generator {
 				if ( $this->should_defer( $done ) ) {
 					return $this->fail( $this->hand_off() );
 				}
+				$store->renew_lock();
 				$posts = $this->batch( $settings, $page_number );
 				if ( array() === $posts ) {
 					break;
 				}
 				$fetched = count( $posts );
+				$ids     = array();
 				foreach ( $posts as $post ) {
-					if ( $done >= self::MAX_ITEMS ) {
-						break 2;
-					}
-					$facts = Snapshot::from_post( $post );
+					$ids[] = (int) $post->ID;
+				}
+				$primed = $store->prime_rebuild_meta( $ids );
+				foreach ( $posts as $index => $post ) {
+					$id    = (int) $post->ID;
+					$meta  = isset( $primed[ $id ] ) ? $primed[ $id ] : array();
+					$facts = Snapshot::from_post( $post, $meta );
 					if ( ! Inclusion::allowed( $facts, $settings->post_types() ) ) {
+						unset( $posts[ $index ], $post, $meta );
+						$store->release_posts( array( $id ) );
 						continue;
 					}
-					$id    = (int) $post->ID;
+					if ( $done >= $max ) {
+						$truncated = true;
+						unset( $posts[ $index ], $post, $meta );
+						break;
+					}
 					$title = $this->title( $post );
 					$stamp = $this->stamp( $post, $settings, $facts, $store );
-					$prior = $store->read_cache( $id );
+					$prior = $this->cached_row( $meta );
 					$reuse = ! $fresh && $this->cache_matches( $prior, $stamp, $converter_version );
 					if ( $reuse ) {
-						$page = $prior['markdown'];
 						$note = $prior['note'];
 					} else {
 						$html = Text::strip_shortcodes( $reader->render( $post ) );
@@ -141,7 +164,10 @@ final class Generator {
 						$note = Text::note( (string) $post->post_excerpt, $html, $settings->note_length() );
 						unset( $html, $body );
 						$staged = $store->stage( $id, $page, $stamp, $note, $converter_version, $done );
+						unset( $page );
 						if ( is_wp_error( $staged ) ) {
+							$store->release_posts( $ids );
+							unset( $posts, $primed );
 							return $this->fail( $staged );
 						}
 					}
@@ -154,16 +180,21 @@ final class Generator {
 						'section'  => $this->section_label( $post ),
 						'optional' => $settings->is_optional( (string) $post->post_type ),
 					);
-					unset( $page, $note, $prior );
-					wp_cache_delete( $id, 'post_meta' );
+					unset( $posts[ $index ], $post, $note, $prior, $meta );
+					$store->release_posts( array( $id ) );
 					++$done;
 				}
-				unset( $posts );
-				if ( $fetched < $this->batch_size() ) {
+				$store->release_posts( $ids );
+				unset( $posts, $primed, $ids );
+				if ( $truncated || $fetched < $this->batch_size() ) {
 					break;
 				}
 				++$page_number;
-			} while ( $done < self::MAX_ITEMS );
+				$capped_on_boundary = true;
+			} while ( $done < $max );
+			if ( ! $truncated && $capped_on_boundary && $done >= $max ) {
+				$truncated = $this->another_document( $settings, $store, $page_number );
+			}
 		} finally {
 			wp_set_current_user( $previous );
 		}
@@ -186,6 +217,9 @@ final class Generator {
 		unset( $rows );
 		$catalog = new Catalog( $this->site_name(), $this->summary( $settings ), $settings->details(), $documents );
 		$index   = ( new LlmsTxt() )->index( $catalog );
+		if ( $truncated ) {
+			$index = rtrim( $index ) . "\n\n" . LlmsTxt::truncation_line( $max ) . "\n";
+		}
 		unset( $documents, $catalog );
 		$stored = $store->commit( $index, $ids );
 		unset( $index );
@@ -221,13 +255,13 @@ final class Generator {
 	}
 
 	/**
-	 * @param array{stamp: string, markdown: string, note: string, converter: string}|null $prior Stored row.
+	 * @param array{stamp: string, note: string, converter: string}|null $prior Stored row, without the Markdown body.
 	 */
 	private function cache_matches( $prior, string $stamp, string $converter_version ): bool {
-		if ( ! is_array( $prior ) || ! isset( $prior['stamp'], $prior['markdown'], $prior['note'], $prior['converter'] ) ) {
+		if ( ! is_array( $prior ) || ! isset( $prior['stamp'], $prior['note'], $prior['converter'] ) ) {
 			return false;
 		}
-		if ( ! is_string( $prior['converter'] ) || strlen( $prior['converter'] ) !== strlen( $converter_version ) ) {
+		if ( ! is_string( $prior['note'] ) || ! is_string( $prior['converter'] ) || strlen( $prior['converter'] ) !== strlen( $converter_version ) ) {
 			return false;
 		}
 		if ( ! hash_equals( $converter_version, $prior['converter'] ) ) {
@@ -237,6 +271,87 @@ final class Generator {
 			return false;
 		}
 		return hash_equals( $stamp, $prior['stamp'] );
+	}
+
+	/**
+	 * @param array<string, mixed> $meta Primed meta for one post.
+	 * @return array{stamp: string, note: string, converter: string}|null
+	 */
+	private function cached_row( array $meta ): ?array {
+		$stamp     = isset( $meta[ Store::META_STAMP ] ) ? $meta[ Store::META_STAMP ] : null;
+		$note      = isset( $meta[ Store::META_NOTE ] ) ? $meta[ Store::META_NOTE ] : null;
+		$converter = isset( $meta[ Store::META_CONVERTER ] ) ? $meta[ Store::META_CONVERTER ] : '';
+		if ( ! is_string( $stamp ) || '' === $stamp || ! is_string( $note ) ) {
+			return null;
+		}
+		if ( ! is_string( $converter ) ) {
+			$converter = '';
+		}
+		return array(
+			'stamp'     => $stamp,
+			'note'      => $note,
+			'converter' => $converter,
+		);
+	}
+
+	/**
+	 * True when another included document exists after the cap.
+	 */
+	private function another_document( Settings $settings, Store $store, int $page ): bool {
+		$guard = 0;
+		while ( $guard < 20 ) {
+			++$guard;
+			$posts = $this->batch( $settings, $page );
+			if ( array() === $posts ) {
+				return false;
+			}
+			$ids = array();
+			foreach ( $posts as $post ) {
+				$ids[] = (int) $post->ID;
+			}
+			$primed = $store->prime_rebuild_meta( $ids );
+			$found  = false;
+			foreach ( $posts as $post ) {
+				$id   = (int) $post->ID;
+				$meta = isset( $primed[ $id ] ) ? $primed[ $id ] : array();
+				if ( Inclusion::allowed( Snapshot::from_post( $post, $meta ), $settings->post_types() ) ) {
+					$found = true;
+					break;
+				}
+			}
+			$full = count( $posts ) >= $this->batch_size();
+			$store->release_posts( $ids );
+			unset( $posts, $primed, $ids );
+			if ( $found || ! $full ) {
+				return $found;
+			}
+			++$page;
+		}
+		return true;
+	}
+
+	public static function item_limit(): int {
+		$max = (int) apply_filters( 'ai_ready_max_items', self::MAX_ITEMS );
+		if ( $max < 1 ) {
+			return self::MAX_ITEMS;
+		}
+		return $max;
+	}
+
+	/**
+	 * Leave a cron event so a killed rebuild is tried again after the lock can expire.
+	 */
+	private function arm_crash_retry(): void {
+		self::$crash_retry_at = time() + Store::LOCK_TTL + 60;
+		wp_schedule_single_event( self::$crash_retry_at, Scheduler::HOOK );
+	}
+
+	private function disarm_crash_retry(): void {
+		if ( self::$crash_retry_at < 1 ) {
+			return;
+		}
+		wp_unschedule_event( self::$crash_retry_at, Scheduler::HOOK );
+		self::$crash_retry_at = 0;
 	}
 
 	private function converter_version(): string {
@@ -333,7 +448,8 @@ final class Generator {
 				'ignore_sticky_posts'    => true,
 				'suppress_filters'       => true,
 				'no_found_rows'          => true,
-				'update_post_meta_cache' => true,
+				'cache_results'          => false,
+				'update_post_meta_cache' => false,
 				'update_post_term_cache' => false,
 			)
 		);
@@ -343,8 +459,13 @@ final class Generator {
 				$posts[] = $post;
 			}
 		}
+		$query->posts = array();
 		wp_reset_postdata();
 		unset( $query );
+		global $wpdb;
+		if ( isset( $wpdb ) && is_object( $wpdb ) ) {
+			$wpdb->last_result = array();
+		}
 		return $posts;
 	}
 

@@ -16,7 +16,7 @@ Pretty permalinks produce `/sample-post.md`. Plain permalinks produce `?format=m
 
 ## Usage
 
-- **Settings > AI Ready** chooses the summary, the optional details, which public post types are included, which of those belong under Optional, whether to publish `llms-full.txt`, and the note length. A rebuild includes at most 10,000 documents. `llms-full.txt` stops at 10 MB.
+- **Settings > AI Ready** chooses the summary, the optional details, which public post types are included, which of those belong under Optional, whether to publish `llms-full.txt`, and the note length. A rebuild includes at most 10,000 documents. `llms-full.txt` stops at 10 MB. A file that is cut short ends with one line saying it was truncated.
 - On each post or page, **Exclude from AI files** leaves that document out. A noindex flag from Yoast, Rank Math, SEOPress, All in One SEO, or The SEO Framework does the same.
 - `wp ai-ready generate` rebuilds the files. `wp ai-ready status` prints whether they exist.
 - Saving a public post schedules one rebuild 30 seconds later. Unpublishing, adding a password, excluding a document, marking it noindex, or deleting it removes that document in the same request, even when the rest of the rebuild is handed to cron.

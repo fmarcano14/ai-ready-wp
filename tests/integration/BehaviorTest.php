@@ -138,6 +138,7 @@ class BehaviorTest extends WP_UnitTestCase {
 		remove_all_filters( 'ai_ready_batch_size' );
 		remove_all_filters( 'ai_ready_treat_as_background' );
 		remove_all_filters( 'ai_ready_full_bytes' );
+		remove_all_filters( 'ai_ready_max_items' );
 		Store::open()->destroy();
 		wp_clear_scheduled_hook( Scheduler::HOOK );
 		parent::tear_down();
@@ -735,6 +736,7 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertLessThanOrEqual( 2000, $bytes );
 		$this->assertTrue( $saw1 );
 		$this->assertFalse( $saw2 );
+		$this->assertStringContainsString( 'Truncated at the size limit.', (string) $this->full() );
 		remove_all_filters( 'ai_ready_full_bytes' );
 	}
 
@@ -916,6 +918,122 @@ class BehaviorTest extends WP_UnitTestCase {
 		$this->assertNull( Store::open()->last_error() );
 		$clean = implode( "\n", ( new CliCommand() )->status_lines() );
 		$this->assertStringContainsString( 'last_error: none', $clean );
+	}
+
+	public function test_the_catalog_says_when_the_document_cap_is_hit(): void {
+		add_filter(
+			'ai_ready_max_items',
+			static function () {
+				return 2;
+			}
+		);
+		$this->assertGreaterThan( 0, $this->generate() );
+		$index = $this->index();
+		$this->assertStringContainsString( 'Truncated after 2 documents.', $index );
+		$this->assertSame( 2, preg_match_all( '/\]\([^)]+\.md\)/', $index ) );
+		$this->assertStringNotContainsString( 'Truncated after 2 documents.', (string) $this->full() );
+	}
+
+	public function test_a_cached_rebuild_does_not_keep_document_bodies_in_memory(): void {
+		$pad = str_repeat( 'memword ', 2500 );
+		$ids = array();
+		for ( $i = 0; $i < 12; $i++ ) {
+			$ids[] = $this->publish( 'post', 'Mem ' . $i, 'mem-doc-' . $i, '<p>' . $pad . '</p>' );
+		}
+		$this->generate();
+		wp_cache_flush();
+
+		$reads = 0;
+		$watch = static function ( $sql ) use ( &$reads ) {
+			$needle = "meta_key = '" . Store::META_MARKDOWN . "'";
+			if ( is_string( $sql ) && false !== strpos( $sql, $needle ) && false !== strpos( $sql, 'meta_value' ) ) {
+				++$reads;
+			}
+			return $sql;
+		};
+		add_filter( 'query', $watch );
+		add_filter(
+			'ai_ready_batch_size',
+			static function () {
+				return 4;
+			}
+		);
+		$before = memory_get_usage();
+		$this->assertGreaterThan( 0, $this->generate() );
+		$after = memory_get_usage();
+		remove_filter( 'query', $watch );
+
+		$this->assertSame( 0, $reads );
+		$this->assertLessThan( 150000, $after - $before );
+		foreach ( $ids as $id ) {
+			$this->assertFalse( wp_cache_get( $id, 'post_meta' ) );
+			$this->assertFalse( wp_cache_get( $id, 'posts' ) );
+		}
+	}
+
+	public function test_a_busy_rebuild_is_rescheduled_when_the_lock_is_held(): void {
+		$store = Store::open();
+		$this->assertTrue( $store->acquire_lock() );
+		$expires = $store->lock_expires();
+		$this->assertGreaterThan( time(), $expires );
+		$this->assertLessThanOrEqual( time() + Store::LOCK_TTL, $expires );
+		do_action( Scheduler::HOOK );
+		$scheduled = (int) wp_next_scheduled( Scheduler::HOOK );
+		$this->assertGreaterThanOrEqual( $expires + 60, $scheduled );
+		$this->assertLessThanOrEqual( $expires + 65, $scheduled );
+		$this->assertNull( Store::open()->last_error() );
+		$this->assertStringContainsString( 'cafe-nino.md', $this->index() );
+		$store->release_lock();
+	}
+
+	public function test_an_expired_lock_does_not_block_the_next_rebuild(): void {
+		update_option( Store::LOCK_OPTION, 'crashed|' . (string) ( time() - 5 ), false );
+		$result = Generator::trusted(
+			static function () {
+				return ( new Generator() )->run();
+			}
+		);
+		$this->assertIsInt( $result );
+		$this->assertGreaterThan( 0, $result );
+		$this->assertFalse( get_option( Store::LOCK_OPTION ) );
+		$this->assertFalse( wp_next_scheduled( Scheduler::HOOK ) );
+	}
+
+	public function test_the_lock_is_renewed_for_each_batch_and_a_crash_retry_is_cleared(): void {
+		$seen   = array();
+		$during = 0;
+		add_filter(
+			'ai_ready_batch_size',
+			static function ( $size ) use ( &$seen, &$during ) {
+				$seen[] = Store::open()->lock_expires();
+				if ( $during < 1 ) {
+					$during = (int) wp_next_scheduled( Scheduler::HOOK );
+				}
+				$current = get_option( Store::LOCK_OPTION, '' );
+				if ( is_string( $current ) && false !== strpos( $current, '|' ) ) {
+					$token = substr( $current, 0, (int) strrpos( $current, '|' ) );
+					update_option( Store::LOCK_OPTION, $token . '|' . (string) ( time() - 5 ), false );
+				}
+				return 1;
+			}
+		);
+		$this->assertGreaterThan( 0, $this->generate() );
+		$this->assertGreaterThanOrEqual( 2, count( $seen ) );
+		$saw_past = false;
+		$renewed  = false;
+		foreach ( $seen as $expiry ) {
+			if ( $saw_past && $expiry > time() ) {
+				$renewed = true;
+			}
+			if ( $expiry < time() ) {
+				$saw_past = true;
+			}
+		}
+		$this->assertTrue( $saw_past );
+		$this->assertTrue( $renewed );
+		$this->assertGreaterThan( time() + Store::LOCK_TTL, $during );
+		$this->assertFalse( wp_next_scheduled( Scheduler::HOOK ) );
+		$this->assertFalse( get_option( Store::LOCK_OPTION ) );
 	}
 
 	public function test_an_overlapping_rebuild_does_not_record_a_save_error(): void {

@@ -16,6 +16,20 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 final class LlmsTxt {
 
+	/**
+	 * One line for an index that stopped at the document cap.
+	 */
+	public static function truncation_line( int $limit ): string {
+		return 'Truncated after ' . $limit . ' documents.';
+	}
+
+	/**
+	 * One line for a full file that stopped at the byte budget.
+	 */
+	public static function size_limit_line(): string {
+		return 'Truncated at the size limit.';
+	}
+
 	public function index( Catalog $catalog ): string {
 		$lines    = $this->header_lines( $catalog );
 		$grouped  = array();

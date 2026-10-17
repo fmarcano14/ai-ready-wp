@@ -197,11 +197,18 @@ final class Scheduler {
 	}
 
 	public function rebuild(): void {
-		Generator::trusted(
+		$result = Generator::trusted(
 			static function () {
-				( new Generator() )->run();
+				return ( new Generator() )->run();
 			}
 		);
+		if ( ! is_wp_error( $result ) || 'ai_ready_busy' !== $result->get_error_code() ) {
+			return;
+		}
+		$expires = Store::open()->lock_expires();
+		$when    = ( $expires > time() ? $expires : time() ) + 60;
+		wp_clear_scheduled_hook( self::HOOK );
+		wp_schedule_single_event( $when, self::HOOK );
 	}
 
 	private function relevant( \WP_Post $post ): bool {

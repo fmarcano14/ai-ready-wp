@@ -70,6 +70,11 @@ final class LlmsTxtTest extends TestCase {
 		$this->assertTrue( mb_check_encoding( $page, 'UTF-8' ) );
 	}
 
+	public function test_truncation_lines_are_a_single_sentence(): void {
+		$this->assertSame( 'Truncated after 10000 documents.', LlmsTxt::truncation_line( 10000 ) );
+		$this->assertSame( 'Truncated at the size limit.', LlmsTxt::size_limit_line() );
+	}
+
 	public function test_link_titles_do_not_break_the_markdown_link(): void {
 		$catalog = new Catalog(
 			'Site',
